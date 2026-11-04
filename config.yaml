@@ -1,0 +1,38 @@
+# Copy to config.local.yaml and confirm the resolved settings before installation.
+drafts: 5
+clients: 2
+port: 3003 # null disables the loop's background HTML server.
+knowledge_base: null
+solver_model: gpt-6.1-terra
+cli_babysitter_model: gpt-6-luna
+maximize: true
+tree: .aide/tree
+state: .aide/controller
+workdirs: .aide/workdirs
+poll_seconds: 10
+multica:
+  project_id: REPLACE_WITH_BENCHMARK_PROJECT_ID
+  runtime_id: REPLACE_WITH_EXISTING_RUNTIME_ID
+  thinking_level: high
+benchmark:
+  description: REPLACE_WITH_THE_BENCHMARK_TASK_AND_SUBMISSION_CONTRACT
+  repository: /absolute/path/to/baseline-solution-repository
+  public_data: /absolute/path/to/public-data
+  private_paths:
+    - /absolute/path/to/private-data
+    - /absolute/path/to/host-evaluator.py
+  evaluate_argv:
+    - /absolute/path/to/python
+    - /absolute/path/to/host-evaluator.py
+    - --solution
+    - '{solution}'
+  timeout_seconds: 3600
+sandbox:
+  # The existing runtime must sandbox every agent tool, including query
+  # clients. Native Multica metadata and SOP-only exec wrappers do not do this.
+  profile: REPLACE_WITH_EXISTING_ISOLATED_RUNTIME_PROFILE
+  # An operator-provided probe launches through the actual agent runtime. It accepts
+  # --profile, --runtime-id and --policy; see docs/installation.md.
+  probe_argv:
+    - /absolute/path/to/python
+    - /absolute/path/to/runtime-isolation-probe.py

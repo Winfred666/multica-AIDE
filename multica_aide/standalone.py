@@ -1,0 +1,408 @@
+"""Run a shared AIDE tree with native Multica query clients and a host evaluator."""
+import json
+import math
+import os
+from pathlib import Path
+import shlex
+import shutil
+import subprocess
+import sys
+import time
+from urllib.error import HTTPError
+from urllib.request import Request, urlopen
+
+import yaml
+
+from . import SearchTree
+
+ACTIVE = {'queued', 'dispatched', 'running', 'deferred', 'waiting_local_directory'}
+LAUNCHER = Path(__file__).resolve().parents[1] / 'run.py'
+
+
+def read(path):
+    return json.loads(Path(path).read_text())
+
+
+def write(path, value):
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_suffix(path.suffix + '.tmp')
+    temporary.write_text(json.dumps(value, indent=2, allow_nan=False) + '\n')
+    temporary.replace(path)
+
+
+class API:
+    """Use the installing native task's workspace and credentials."""
+    def __init__(self):
+        self.base = os.environ['MULTICA_SERVER_URL'].rstrip('/')
+        self.workspace = os.environ['MULTICA_WORKSPACE_ID']
+        self.headers = {'Authorization': 'Bearer ' + os.environ['MULTICA_TOKEN'],
+                        'X-Workspace-ID': self.workspace, 'Content-Type': 'application/json'}
+
+    def request(self, method, path, body=None):
+        data = json.dumps(body).encode() if body is not None else None
+        try:
+            with urlopen(Request(self.base + path, data=data, headers=self.headers, method=method), timeout=30) as response:
+                payload = response.read()
+                return json.loads(payload) if payload else None
+        except HTTPError as error:
+            detail = error.read().decode(errors='replace').replace(os.environ['MULTICA_TOKEN'], '[REDACTED]')
+            raise RuntimeError(f'{method} {path}: HTTP {error.code}: {detail}') from None
+
+
+def load_config(path):
+    path = Path(path).resolve()
+    config = yaml.safe_load(path.read_text())
+    if not isinstance(config, dict):
+        raise ValueError('config.yaml must contain a mapping')
+    for field in ('drafts', 'clients'):
+        if type(config.get(field)) is not int or config[field] < 1:
+            raise ValueError(field + ' must be a positive integer')
+    for field, default in (('solver_model', 'gpt-6.1-terra'), ('cli_babysitter_model', 'gpt-6-luna')):
+        config.setdefault(field, default)
+        if not isinstance(config[field], str) or not config[field].strip():
+            raise ValueError(field + ' must name an available runtime model')
+    if config.get('port') is not None and (type(config['port']) is not int or not 0 < config['port'] < 65536):
+        raise ValueError('port must be null or a TCP port')
+    for field in ('tree', 'state', 'workdirs'):
+        config[field] = str((path.parent / config[field]).resolve())
+    if config.get('knowledge_base'):
+        config['knowledge_base'] = str((path.parent / config['knowledge_base']).resolve())
+    bench = config['benchmark']
+    for field in ('repository', 'public_data'):
+        bench[field] = str((path.parent / bench[field]).resolve())
+    bench['private_paths'] = [str((path.parent / p).resolve()) for p in bench['private_paths']]
+    if not bench['private_paths'] or any(p == '/' for p in bench['private_paths']):
+        raise ValueError('benchmark.private_paths must list the hidden evaluator and data')
+    for field in ('evaluate_argv',):
+        if not isinstance(bench[field], list) or not bench[field] or not all(isinstance(a, str) for a in bench[field]):
+            raise ValueError('benchmark.' + field + ' must be a command argument array')
+    if not any('{solution}' in arg for arg in bench['evaluate_argv']):
+        raise ValueError('evaluate_argv must pass {solution} to the evaluator')
+    sandbox = config['sandbox']
+    if not sandbox.get('profile') or not sandbox.get('probe_argv'):
+        raise ValueError('sandbox needs an existing enforcing runtime profile and actual-runtime probe_argv')
+    config['config_path'] = str(path)
+    return config
+
+
+def search(config):
+    return SearchTree(config['tree'], drafts=config['drafts'], knowledge_base=config.get('knowledge_base'),
+                      maximize=config.get('maximize', True))
+
+
+def evaluate(config, solution):
+    bench = config['benchmark']
+    argv = [arg.replace('{solution}', str(solution)) for arg in bench['evaluate_argv']]
+    result = subprocess.run(argv, cwd=solution, text=True, capture_output=True, check=True,
+                            timeout=bench.get('timeout_seconds', 3600))
+    measured = json.loads(result.stdout)
+    score = measured.get('score')
+    if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score):
+        raise ValueError('the host evaluator must return JSON with a finite numeric score')
+    return measured
+
+
+def snapshot(source, destination):
+    """Freeze a solution without copying a worktree's Git control file."""
+    shutil.copytree(source, destination, ignore=shutil.ignore_patterns('.git', '.aide-submission.json'))
+    return str(destination)
+
+
+def checkout(source, destination):
+    snapshot(source, destination)
+    for argv in (['git', 'init', '-q', '-b', 'main'], ['git', 'add', '.'],
+                 ['git', '-c', 'user.name=Multica', '-c', 'user.email=multica@localhost',
+                  'commit', '-q', '--allow-empty', '-m', 'Benchmark solution']):
+        subprocess.run(argv, cwd=destination, check=True, capture_output=True)
+
+
+def policy(config):
+    return json.dumps({'deny_paths': config['benchmark']['private_paths'] + [config['state'], config['tree']],
+                       'read_only_paths': [config['benchmark']['public_data'], str(LAUNCHER), str(LAUNCHER.parent / 'multica_aide'), config['config_path']]},
+                      separators=(',', ':'))
+
+
+def probe(config):
+    result = subprocess.run([*config['sandbox']['probe_argv'], '--profile', config['sandbox']['profile'],
+                             '--runtime-id', config['multica']['runtime_id'],
+                             '--policy', policy(config)], text=True, capture_output=True, check=True, timeout=60)
+    observed = json.loads(result.stdout)
+    if (observed.get('runtime_id') != config['multica']['runtime_id'] or observed.get('private_data_visible') is not False
+            or observed.get('public_data_readable') is not True or observed.get('solution_writable') is not True):
+        raise ValueError('the selected runtime probe must establish private_data_visible: false, '
+                         'public_data_readable: true and solution_writable: true for its runtime_id')
+    return observed
+
+
+def label(api, name):
+    labels = api.request('GET', '/api/labels?resource_type=issue')['labels']
+    row = next((row for row in labels if row['name'] == name), None)
+    return (row or api.request('POST', '/api/labels', {'name': name, 'color': '#6b7280', 'resource_type': 'issue'}))['id']
+
+
+def metadata(api, issue, values):
+    for key, value in values.items():
+        api.request('PUT', '/api/issues/' + issue + '/metadata/' + key, {'value': value})
+
+
+def install(config, parent_issue, confirm=False):
+    """The first invocation is a configuration preview with no API writes."""
+    if not confirm:
+        return {'status': 'confirmation_required', 'config': config,
+                'next_action': 'Confirm these settings with the requester, then repeat install with --confirm-config.'}
+    state_file = Path(config['state']) / 'installation.json'
+    if state_file.exists():
+        saved = read(state_file)
+        if saved['config'] != config or saved['parent_issue_id'] != parent_issue:
+            raise ValueError('installation settings changed; use a new state/tree/workdirs directory')
+        if saved['status'] == 'installed':
+            return saved
+        raise ValueError('installation interrupted; inspect saved resource IDs before retrying')
+    for path in (config['benchmark']['repository'], config['benchmark']['public_data'], *config['benchmark']['private_paths']):
+        if not Path(path).exists():
+            raise ValueError('missing benchmark resource: ' + path)
+    if Path(config['benchmark']['repository']).is_relative_to(config['state']):
+        raise ValueError('benchmark repository must be outside the private controller state')
+    repository = Path(config['benchmark']['repository'])
+    for storage in (config['state'], config['tree'], config['workdirs']):
+        if Path(storage).is_relative_to(repository):
+            raise ValueError('controller storage must be outside the baseline solution repository: ' + storage)
+    if any(Path(path).is_relative_to(repository) for path in config['benchmark']['private_paths']):
+        raise ValueError('hidden data and evaluator must be outside the baseline solution repository')
+    api = API()
+    isolation = probe(config)
+    parent = api.request('GET', '/api/issues/' + parent_issue)
+    if parent['workspace_id'] != api.workspace:
+        raise ValueError('parent issue belongs to another workspace')
+    if parent.get('project_id') != config['multica']['project_id']:
+        raise ValueError('parent issue must belong to the configured benchmark project')
+    baseline = Path(config['state']) / 'artifacts' / 'baseline'
+    if not baseline.exists():
+        snapshot(config['benchmark']['repository'], baseline)
+    measured = measured_artifact(config, baseline)
+    search(config).register_baseline('baseline', 'Initial baseline', config['benchmark']['description'],
+                                     measured['score'], artifact=str(baseline), review=measured.get('review'))
+    saved = {'status': 'installing', 'config': config, 'workspace_id': api.workspace, 'server_url': api.base,
+             'parent_issue_id': parent_issue, 'clients': [], 'sandbox_probe': isolation}
+    write(state_file, saved)
+    query = label(api, 'query')
+    solver = api.request('POST', '/api/agents', {
+        'name': 'Solution developer', 'description': 'Benchmark solver for issue ' + parent_issue,
+        'runtime_id': config['multica']['runtime_id'], 'model': config['solver_model'],
+        'thinking_level': config['multica'].get('thinking_level', 'high'),
+        'visibility': 'workspace', 'max_concurrent_tasks': config['clients'],
+        'instructions': ('Implement and test the assigned change in the supplied solution repository. '
+                         'Preserve the official benchmark contract. Report blockers to the parent issue.')})
+    saved['solver_id'] = solver['id']
+    write(state_file, saved)
+    for n in range(config['clients']):
+        session = 'client-' + str(n + 1)
+        agent = api.request('POST', '/api/agents', {
+            'name': 'Improvement client ' + str(n + 1), 'description': 'Optimization client for issue ' + parent_issue,
+            'runtime_id': config['multica']['runtime_id'], 'model': config['cli_babysitter_model'],
+            'thinking_level': 'low', 'visibility': 'workspace', 'max_concurrent_tasks': 1,
+            'instructions': ('Own the current optimization round. Delegate edits to the supplied solver, '
+                             'review the result, then submit. Recover blocked dev children through the native issue workflow. '
+                             'Escalate infrastructure failures to setup. Follow the round thread and preserve the benchmark contract.')})
+        row = {'session_id': session, 'agent_id': agent['id'], 'completed': 0}
+        saved['clients'].append(row)
+        write(state_file, saved)
+        issue = api.request('POST', '/api/issues', {'title': 'Improvement client ' + str(n + 1),
+            'description': 'Shared optimization tree; follow the current round thread.',
+            'project_id': config['multica']['project_id'], 'parent_issue_id': parent_issue, 'status': 'backlog'})
+        row['issue_id'] = issue['id']
+        write(state_file, saved)
+        api.request('POST', '/api/issues/' + issue['id'] + '/labels', {'label_id': query})
+        metadata(api, issue['id'], {'sandbox_profile': config['sandbox']['profile'], 'sandbox_policy': policy(config),
+                                    'aide_runtime_id': config['multica']['runtime_id']})
+        api.request('PUT', '/api/issues/' + issue['id'], {'assignee_type': 'agent', 'assignee_id': agent['id'], 'suppress_run': True})
+    saved['status'] = 'installed'
+    write(state_file, saved)
+    return saved
+
+
+def wake(api, client, content, marker, parent=None):
+    path = '/api/issues/' + client['issue_id']
+    body = {'content': marker + '\n\n' + content, 'suppress_agent_ids': [client['agent_id']]}
+    if parent:
+        body['parent_id'] = parent
+    comment = api.request('POST', path + '/comments', body)
+    thread = parent or comment['id']
+    api.request('PUT', path, {'status': 'in_progress', 'suppress_run': True})
+    api.request('POST', path + '/wakeups', {'agent_id': client['agent_id'], 'kind': 'at', 'mode': 'once',
+        'after_seconds': 1, 'parent_comment_id': thread, 'instruction': 'Continue the work in comment ' + comment['id'] + '.',
+        'idempotency_key': marker})
+    return thread
+
+
+def owned_work(api, issue_id):
+    """Return active tasks and blocked descendants, including dev work delegated by a client."""
+    pending, active, blocked = [issue_id], [], {}
+    while pending:
+        identity = pending.pop()
+        issue = api.request('GET', '/api/issues/' + identity)
+        if identity == issue_id and issue['status'] in {'blocked', 'cancelled'}:
+            raise RuntimeError('improvement client ' + identity + ' is ' + issue['status'])
+        tasks = api.request('GET', '/api/issues/' + identity + '/task-runs')
+        running = [t for t in tasks if t['status'] in ACTIVE or (t.get('result') or {}).get('process_cleanup_pending')]
+        active.extend({**task, 'issue_id': identity} for task in running)
+        latest = max(tasks, key=lambda t: (t.get('created_at') or '', t['id']), default=None)
+        if not running and latest and latest['status'] in {'failed', 'cancelled'}:
+            if identity == issue_id:
+                raise RuntimeError(f"Native task {latest['id']} on issue {identity} {latest['status']}: "
+                                   + str(latest.get('error') or 'inspect its task result before resuming'))
+            if issue['status'] not in {'done', 'cancelled'}:
+                blocked[identity] = latest['id']
+        if identity != issue_id and issue['status'] == 'blocked':
+            blocked[identity] = (issue.get('updated_at') or 'blocked') + ':' + (latest['id'] if latest else '')
+        pending.extend(child['id'] for child in api.request('GET', '/api/issues/' + identity + '/children')['issues'])
+    return active, blocked
+
+
+def recover_children(api, client, blocked):
+    """Wake the query babysitter once for each changed blocked-child state."""
+    previous = client.get('blocked_states', {})
+    changed = [identity for identity, state in blocked.items() if previous.get(identity) != state]
+    client['blocked_states'] = blocked.copy()
+    if not changed:
+        return
+    client['recoveries'] = client.get('recoveries', 0) + 1
+    round_info = client['round']
+    wake(api, client, 'Resolve blocked child ' + ', '.join(changed) + '; finish current round.',
+         round_info['round_id'] + '-recover-' + str(client['recoveries']), round_info['thread_id'])
+
+
+def measured_artifact(config, artifact):
+    """Evaluate the frozen artifact once, retaining its official result for handoff retries."""
+    result_file = artifact.with_name(artifact.name + '.score.json')
+    if result_file.exists():
+        return read(result_file)
+    measured = evaluate(config, artifact)
+    write(result_file, measured)
+    return measured
+
+
+def register_submission(config, client):
+    round_info = client['round']
+    workdir = Path(round_info['workdir'])
+    spec = read(workdir / '.aide-submission.json')
+    if spec['round_id'] != round_info['round_id']:
+        raise ValueError('submission belongs to a different client round')
+    artifact = Path(config['state']) / 'artifacts' / round_info['round_id']
+    if not artifact.exists():
+        snapshot(workdir, artifact)
+    measured = measured_artifact(config, artifact)
+    return search(config).register(spec['id'], spec['title'], spec['description'], measured['score'],
+        session_id=client['session_id'], round_id=round_info['round_id'],
+        parent_id=round_info['parent_id'], artifact=str(artifact),
+        review=measured.get('review', spec.get('review')))
+
+
+def begin(config, max_rounds=0):
+    """Poll client rounds; query babysitters recover their blocked dev children."""
+    state_file = Path(config['state']) / 'installation.json'
+    saved = read(state_file)
+    api = API()
+    if saved['config'] != config or saved['workspace_id'] != api.workspace or saved['server_url'] != api.base:
+        raise ValueError('run with the installed settings and native workspace')
+    if saved['status'] != 'installed':
+        raise ValueError('finish the saved installation before beginning client rounds')
+    probe(config)
+    viewer = None
+    if config.get('port'):
+        viewer = subprocess.Popen([sys.executable, str(LAUNCHER), '--config', config['config_path'], 'serve'],
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        while True:
+            if viewer and viewer.poll() is not None:
+                raise RuntimeError('tree viewer exited; fix its configured port before resuming')
+            for client in saved['clients']:
+                active, blocked = owned_work(api, client['issue_id'])
+                if blocked:
+                    if not any(task['issue_id'] == client['issue_id'] for task in active):
+                        recover_children(api, client, blocked)
+                        write(state_file, saved)
+                    continue
+                if client.pop('blocked_states', None) is not None:
+                    write(state_file, saved)
+                if active:
+                    continue
+                if client.get('round'):
+                    round_info = client['round']
+                    workdir = Path(round_info['workdir'])
+                    submission = workdir / '.aide-submission.json'
+                    if not submission.exists():
+                        client['reminders'] = client.get('reminders', 0) + 1
+                        wake(api, client, 'Submit the current solution with its title and description using the supplied submit command.',
+                             round_info['round_id'] + '-submit-' + str(client['reminders']), round_info['thread_id'])
+                        write(state_file, saved)
+                        continue
+                    node = register_submission(config, client)
+                    api.request('POST', '/api/issues/' + client['issue_id'] + '/comments', {
+                        'content': f"Registered {node['id']}; score {node['score']}.", 'parent_id': round_info['thread_id'],
+                        'suppress_agent_ids': [client['agent_id']]})
+                    api.request('POST', '/api/comments/' + round_info['thread_id'] + '/resolve', {})
+                    client['completed'] += 1
+                    client.pop('round')
+                    write(state_file, saved)
+                if max_rounds and client['completed'] >= max_rounds:
+                    continue
+                context = search(config).next_context(client['session_id'])
+                workdir = Path(config['workdirs']) / client['session_id'] / context['round_id']
+                checkout(context['restore_node']['artifact'], workdir)
+                metadata(api, client['issue_id'], {'query_workdir': str(workdir), 'aide_round_id': context['round_id']})
+                quoted = shlex.join([sys.executable, str(LAUNCHER)])
+                prompt = (config['benchmark']['description'] + '\n\n' + json.dumps(context, indent=2) +
+                    '\nSolution repository: ' + str(workdir) + '\nPublic data: ' + config['benchmark']['public_data'] +
+                    '\nDelegate edits with: ' + quoted + ' dev --agent-id ' + shlex.quote(saved['solver_id']) +
+                    ' --title TITLE --description-file FILE\nReview the dev result, then request host scoring with: ' +
+                    quoted + ' submit --id ID --title TITLE --description DESCRIPTION\n'
+                    'End after submission. The host evaluator registers the official score and opens your next round.')
+                round_info = {key: context[key] for key in ('round_id', 'parent_id')}
+                round_info.update(workdir=str(workdir), thread_id=wake(api, client, prompt, context['round_id']))
+                client['round'] = round_info
+                write(state_file, saved)
+            if max_rounds and all(c['completed'] >= max_rounds for c in saved['clients']):
+                return {'status': 'completed', 'clients': saved['clients']}
+            time.sleep(config.get('poll_seconds', 10))
+    finally:
+        if viewer:
+            viewer.terminate()
+            viewer.wait(timeout=10)
+
+
+def submit(identity, title, description, review=None):
+    value = {'id': identity, 'title': title, 'description': description, 'review': review}
+    if not all(isinstance(value[k], str) and value[k].strip() for k in ('id', 'title', 'description')):
+        raise ValueError('submission needs id, title and description')
+    api = API()
+    issue = api.request('GET', '/api/issues/' + os.environ['MULTICA_ISSUE_ID'])
+    inherited = issue.get('metadata') or {}
+    if not inherited.get('query_workdir') or not inherited.get('aide_round_id'):
+        raise ValueError('submit belongs to an active improvement client query issue')
+    value['round_id'] = inherited['aide_round_id']
+    write(Path(inherited['query_workdir']) / '.aide-submission.json', value)
+    return {'status': 'submitted', 'next_action': 'End this round; the host evaluator will register its score.'}
+
+
+def create_dev(agent_id, title, description_file):
+    """Create a code child on the same isolated runtime as its query client."""
+    api = API()
+    parent_id = os.environ['MULTICA_ISSUE_ID']
+    parent = api.request('GET', '/api/issues/' + parent_id)
+    inherited = parent.get('metadata') or {}
+    workdir = inherited['query_workdir']
+    if not inherited.get('sandbox_policy') or not inherited.get('sandbox_profile'):
+        raise ValueError('optimization client is missing its sandbox policy')
+    agent = api.request('GET', '/api/agents/' + agent_id)
+    if agent['runtime_id'] != inherited['aide_runtime_id']:
+        raise ValueError('development children must use the configured isolated runtime')
+    issue = api.request('POST', '/api/issues', {'title': title, 'description': Path(description_file).read_text(),
+        'project_id': parent['project_id'], 'parent_issue_id': parent_id, 'status': 'backlog'})
+    api.request('POST', '/api/issues/' + issue['id'] + '/labels', {'label_id': label(api, 'dev')})
+    metadata(api, issue['id'], {'sandbox_profile': inherited['sandbox_profile'],
+        'sandbox_policy': inherited['sandbox_policy'], 'aide_runtime_id': inherited['aide_runtime_id'], 'git_repo_root': workdir,
+        'git_workdir': workdir, 'git_branch': 'main', 'git_owner_issue_id': issue['id']})
+    api.request('PUT', '/api/issues/' + issue['id'], {'assignee_type': 'agent', 'assignee_id': agent_id, 'status': 'in_progress'})
+    return {'issue_id': issue['id'], 'workdir': workdir}

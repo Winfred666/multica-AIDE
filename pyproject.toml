@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "multica-aide"
+version = "0.1.0"
+description = "Shared scored solution trees and Multica improvement clients"
+requires-python = ">=3.11"
+dependencies = ["PyYAML>=6,<7"]
+
+[project.scripts]
+multica-aide = "multica_aide.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["multica_aide*"]
+
+[tool.setuptools.package-data]
+multica_aide = ["*.html"]
