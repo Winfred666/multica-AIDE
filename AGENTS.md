@@ -73,6 +73,9 @@ foreground; `serve` hosts the tree independently.
 
 ## Embed in a larger module
 
+When installing multiple native clients under one parent issue, give each
+configuration a distinct `name` and separate tree, state and workdir paths.
+
 Use the Python API between the caller's phases. Give independent optimization
 loops separate tree directories. The caller owns restoration, development,
 evaluation, phase ordering and termination; it does not run the installer or client

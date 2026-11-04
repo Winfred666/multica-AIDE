@@ -175,6 +175,8 @@ def install(config, parent_issue, confirm=False):
     runtime_id = config['multica'].get('runtime_id') or api.request('GET', '/api/agents/' + parent['assignee_id'])['runtime_id']
     skill_id = cli_skill(api)
     suffix = ' #' + str(parent['number'])
+    if config.get('name'):
+        suffix += ' / ' + config['name']
     solver = api.request('POST', '/api/agents', {'name': 'Solution developer' + suffix,
         'description': 'Benchmark solver for issue ' + parent_issue, 'runtime_id': runtime_id,
         'model': config['solver_model'], 'thinking_level': config['multica'].get('thinking_level', 'high'),
