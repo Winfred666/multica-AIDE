@@ -86,7 +86,7 @@ def block_setup(args, context):
 def prepare_candidate(args, context):
     issue, workdir, progress, config = client(context)
     if progress.get('candidate'):
-        return {'data': {'candidate': progress['candidate']}}
+        return {}
     tree = search(config)
     journal = tree.snapshot()
     baseline = next((n for n in journal['nodes'] if n['id'] == journal['baseline_id']), None)
@@ -109,7 +109,7 @@ def prepare_candidate(args, context):
             checkout(round_context['restore_node']['artifact'], candidate)
         progress.update(candidate=str(candidate), baseline=False, round=round_context)
     write(workdir / '.aide-client.json', progress)
-    return {'data': {'candidate': str(candidate)}}
+    return {}
 
 
 def describe(args, context):
@@ -130,7 +130,7 @@ def describe(args, context):
                 session_id=progress['session_id'], round_id=progress['round']['round_id'], artifact=artifact)
         progress['node_id'] = identity
         write(workdir / '.aide-client.json', progress)
-        return {'data': {'node_id': identity}}
+        return {}
     except ValueError as error:
         return {'accepted': False, 'instruction': str(error)}
 
@@ -155,7 +155,7 @@ def record(args, context):
         progress['completed'] = sum(n['session_id'] == progress['session_id'] and n['kind'] != 'baseline'
                                     and n['score'] is not None for n in tree.snapshot()['nodes'])
         write(workdir / '.aide-client.json', progress)
-        return {'data': {'node': node}}
+        return {}
     except (ValueError, KeyError, TypeError) as error:
         return {'accepted': False, 'instruction': 'Supply the official JSON delivery and one review paragraph. ' + str(error)}
 
@@ -179,7 +179,8 @@ def finish(args, context):
 
 def candidate_view(context):
     issue, workdir, progress, config = client(context)
-    data = {'candidate': progress['candidate'], 'tree': search(config).snapshot(), 'round': progress.get('round')}
+    data = {'candidate': progress['candidate'], 'baseline': progress['baseline'],
+            'tree': search(config).snapshot(), 'round': progress.get('round')}
     installation = read(Path(config['state']) / 'installation.json')
     data.update(solver_id=installation['solver_id'], project_id=config['multica']['project_id'],
                 benchmark=config['benchmark']['description'], public_data=config['benchmark']['public_data'],
