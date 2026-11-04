@@ -31,6 +31,8 @@ Copy `config.yaml` to ignored `config.local.yaml` and set the benchmark project,
 resource paths and exact available model IDs. Runtime defaults to the installer's
 runtime. The default solver is `gpt-6.1-terra`; the client babysitter defaults to
 `gpt-6-luna`. Resolve these against the runtime's model inventory before installing.
+Store instance benchmark files in the benchmark project or ignored `.aide/`;
+keep this module's Git history limited to its portable software.
 
 The benchmark supplies two parts:
 
