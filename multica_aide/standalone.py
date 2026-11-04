@@ -174,7 +174,8 @@ def install(config, parent_issue, confirm=False):
     parent = api.request('GET', '/api/issues/' + parent_issue)
     runtime_id = config['multica'].get('runtime_id') or api.request('GET', '/api/agents/' + parent['assignee_id'])['runtime_id']
     skill_id = cli_skill(api)
-    solver = api.request('POST', '/api/agents', {'name': 'Solution developer',
+    suffix = ' #' + str(parent['number'])
+    solver = api.request('POST', '/api/agents', {'name': 'Solution developer' + suffix,
         'description': 'Benchmark solver for issue ' + parent_issue, 'runtime_id': runtime_id,
         'model': config['solver_model'], 'thinking_level': config['multica'].get('thinking_level', 'high'),
         'visibility': 'workspace', 'max_concurrent_tasks': config['clients']})
@@ -185,7 +186,7 @@ def install(config, parent_issue, confirm=False):
         session = 'client-' + str(index + 1)
         workdir = Path(config['workdirs']) / session
         workdir.mkdir(parents=True, exist_ok=True)
-        agent = api.request('POST', '/api/agents', {'name': 'Improvement client ' + str(index + 1),
+        agent = api.request('POST', '/api/agents', {'name': 'Improvement client ' + str(index + 1) + suffix,
             'description': 'Optimization client for issue ' + parent_issue, 'runtime_id': runtime_id,
             'model': config['cli_babysitter_model'], 'instructions': CLIENT_PROTOCOL,
             'thinking_level': 'low', 'visibility': 'workspace', 'max_concurrent_tasks': 1})
