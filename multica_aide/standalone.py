@@ -17,6 +17,15 @@ from . import SearchTree
 
 ACTIVE = {'queued', 'dispatched', 'running', 'deferred', 'waiting_local_directory'}
 LAUNCHER = Path(__file__).resolve().with_name('__main__.py')
+SOLVER_INSTRUCTIONS = (
+    'Implement and test the assigned change in the solution repository from issue metadata git_workdir. '
+    'Change to that directory before shell commands. Preserve the official benchmark contract. '
+    'Report blockers to the parent issue.')
+CLIENT_INSTRUCTIONS = (
+    'Own the current round in the solution repository from issue metadata query_workdir. '
+    'Change to that directory before shell commands. Delegate edits to the supplied solver, '
+    'review its result, then submit. Recover blocked or failed dev children through the native issue workflow; '
+    'resume their saved work. Preserve the official benchmark contract.')
 
 
 def read(path):
@@ -162,9 +171,9 @@ def install(config, parent_issue, confirm=False):
             raise ValueError('installation interrupted; inspect saved resource IDs before retrying')
         if saved['config'] != config:
             api = API()
-            api.request('PUT', '/api/agents/' + saved['solver_id'], {'model': config['solver_model']})
+            api.request('PUT', '/api/agents/' + saved['solver_id'], {'model': config['solver_model'], 'instructions': SOLVER_INSTRUCTIONS})
             for client in saved['clients']:
-                api.request('PUT', '/api/agents/' + client['agent_id'], {'model': config['cli_babysitter_model']})
+                api.request('PUT', '/api/agents/' + client['agent_id'], {'model': config['cli_babysitter_model'], 'instructions': CLIENT_INSTRUCTIONS})
             saved['config'] = config
             write(state_file, saved)
         return saved
@@ -201,8 +210,7 @@ def install(config, parent_issue, confirm=False):
         'runtime_id': config['multica']['runtime_id'], 'model': config['solver_model'],
         'thinking_level': config['multica'].get('thinking_level', 'high'),
         'visibility': 'workspace', 'max_concurrent_tasks': config['clients'],
-        'instructions': ('Implement and test the assigned change in the supplied solution repository. '
-                         'Preserve the official benchmark contract. Report blockers to the parent issue.')})
+        'instructions': SOLVER_INSTRUCTIONS})
     saved['solver_id'] = solver['id']
     write(state_file, saved)
     for n in range(config['clients']):
@@ -211,9 +219,7 @@ def install(config, parent_issue, confirm=False):
             'name': 'Improvement client ' + str(n + 1), 'description': 'Optimization client for issue ' + parent_issue,
             'runtime_id': config['multica']['runtime_id'], 'model': config['cli_babysitter_model'],
             'thinking_level': 'low', 'visibility': 'workspace', 'max_concurrent_tasks': 1,
-            'instructions': ('Own the current optimization round. Delegate edits to the supplied solver, '
-                             'review the result, then submit. Recover blocked dev children through the native issue workflow. '
-                             'Escalate infrastructure failures to setup. Follow the round thread and preserve the benchmark contract.')})
+            'instructions': CLIENT_INSTRUCTIONS})
         row = {'session_id': session, 'agent_id': agent['id'], 'completed': 0}
         saved['clients'].append(row)
         write(state_file, saved)

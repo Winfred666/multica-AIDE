@@ -93,8 +93,9 @@ class StandaloneRound(unittest.TestCase):
             self.assertEqual(result['config'], updated)
             self.assertEqual(result['clients'], clients)
             self.assertEqual(tree.snapshot(), before)
-            self.assertEqual(api.return_value.request.call_args_list[0].args,
-                             ('PUT', '/api/agents/solver', {'model': 'provider/sol'}))
+            updated_solver = api.return_value.request.call_args_list[0].args
+            self.assertEqual(updated_solver[:2], ('PUT', '/api/agents/solver'))
+            self.assertEqual(updated_solver[2]['model'], 'provider/sol')
             self.assertEqual(api.return_value.request.call_count, 3)
             self.assertEqual(json.loads((Path(temporary) / 'installation.json').read_text())['config'], updated)
 
