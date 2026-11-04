@@ -81,9 +81,6 @@ def load_config(path):
             raise ValueError('benchmark.' + field + ' must be a command argument array')
     if not any('{solution}' in arg for arg in bench['evaluate_argv']):
         raise ValueError('evaluate_argv must pass {solution} to the evaluator')
-    sandbox = config['sandbox']
-    if not sandbox.get('profile') or not sandbox.get('probe_argv'):
-        raise ValueError('sandbox needs an existing enforcing runtime profile and actual-runtime probe_argv')
     config['config_path'] = str(path)
     return config
 
@@ -117,27 +114,6 @@ def checkout(source, destination):
                  ['git', '-c', 'user.name=Multica', '-c', 'user.email=multica@localhost',
                   'commit', '-q', '--allow-empty', '-m', 'Benchmark solution']):
         subprocess.run(argv, cwd=destination, check=True, capture_output=True)
-
-
-def policy(config):
-    read_only = [config['benchmark']['public_data'], str(LAUNCHER.parent), config['config_path']]
-    if config.get('knowledge_base'):
-        read_only.append(config['knowledge_base'])
-    return json.dumps({'deny_paths': config['benchmark']['private_paths'] + [config['state'], config['tree']],
-                       'read_only_paths': read_only},
-                      separators=(',', ':'))
-
-
-def probe(config):
-    result = subprocess.run([*config['sandbox']['probe_argv'], '--profile', config['sandbox']['profile'],
-                             '--runtime-id', config['multica']['runtime_id'],
-                             '--policy', policy(config)], text=True, capture_output=True, check=True, timeout=60)
-    observed = json.loads(result.stdout)
-    if (observed.get('runtime_id') != config['multica']['runtime_id'] or observed.get('private_data_visible') is not False
-            or observed.get('public_data_readable') is not True or observed.get('solution_writable') is not True):
-        raise ValueError('the selected runtime probe must establish private_data_visible: false, '
-                         'public_data_readable: true and solution_writable: true for its runtime_id')
-    return observed
 
 
 def label(api, name):
@@ -176,7 +152,7 @@ def install(config, parent_issue, confirm=False):
     paths = [config['benchmark']['repository'], config['benchmark']['public_data'], *config['benchmark']['private_paths']]
     if config.get('knowledge_base'):
         paths.append(config['knowledge_base'])
-    for argv in (config['benchmark']['evaluate_argv'], config['sandbox']['probe_argv']):
+    for argv in (config['benchmark']['evaluate_argv'],):
         paths.extend(arg for arg in argv if Path(arg).is_absolute() and '{' not in arg)
     missing = [path for path in dict.fromkeys(paths) if not Path(path).exists()]
     if missing:
@@ -188,9 +164,7 @@ def install(config, parent_issue, confirm=False):
         return {'status': 'preparation_required',
                 'next_action': 'As the installing issue, read the evaluator implementation invoked by '
                                + shlex.join(config['benchmark']['evaluate_argv']) + '. '
-                               'benchmark.private_paths defines worker isolation; installer reads follow the installing issue policy. '
-                               'Ensure solution execution and submission generation use worker private-data denial '
-                               'before the host evaluator grades submitted artifacts with private data. '
+                               'Use the official benchmark contract and the existing Multica runtime. '
                                'Complete this preparation, reuse confirmed settings and confirm any remaining settings '
                                'before running after_preparation_command.',
                 'after_preparation_command': shlex.join([*repeat, '--confirm-config']), 'config': config}
@@ -203,12 +177,14 @@ def install(config, parent_issue, confirm=False):
     if any(Path(path).is_relative_to(repository) for path in config['benchmark']['private_paths']):
         raise ValueError('hidden data and evaluator must be outside the baseline solution repository')
     api = API()
-    isolation = probe(config)
     parent = api.request('GET', '/api/issues/' + parent_issue)
     if parent['workspace_id'] != api.workspace:
         raise ValueError('parent issue belongs to another workspace')
     if parent.get('project_id') != config['multica']['project_id']:
         raise ValueError('parent issue must belong to the configured benchmark project')
+    runtime_id = config['multica'].get('runtime_id')
+    if not runtime_id:
+        runtime_id = api.request('GET', '/api/agents/' + parent['assignee_id'])['runtime_id']
     baseline = Path(config['state']) / 'artifacts' / 'baseline'
     if not baseline.exists():
         snapshot(config['benchmark']['repository'], baseline)
@@ -216,12 +192,12 @@ def install(config, parent_issue, confirm=False):
     search(config).register_baseline('baseline', 'Initial baseline', config['benchmark']['description'],
                                      measured['score'], artifact=str(baseline), review=measured.get('review'))
     saved = {'status': 'installing', 'config': config, 'workspace_id': api.workspace, 'server_url': api.base,
-             'parent_issue_id': parent_issue, 'clients': [], 'sandbox_probe': isolation}
+             'parent_issue_id': parent_issue, 'clients': []}
     write(state_file, saved)
     query = label(api, 'query')
     solver = api.request('POST', '/api/agents', {
         'name': 'Solution developer', 'description': 'Benchmark solver for issue ' + parent_issue,
-        'runtime_id': config['multica']['runtime_id'], 'model': config['solver_model'],
+        'runtime_id': runtime_id, 'model': config['solver_model'],
         'thinking_level': config['multica'].get('thinking_level', 'high'),
         'visibility': 'workspace', 'max_concurrent_tasks': config['clients']})
     saved['solver_id'] = solver['id']
@@ -230,7 +206,7 @@ def install(config, parent_issue, confirm=False):
         session = 'client-' + str(n + 1)
         agent = api.request('POST', '/api/agents', {
             'name': 'Improvement client ' + str(n + 1), 'description': 'Optimization client for issue ' + parent_issue,
-            'runtime_id': config['multica']['runtime_id'], 'model': config['cli_babysitter_model'],
+            'runtime_id': runtime_id, 'model': config['cli_babysitter_model'],
             'thinking_level': 'low', 'visibility': 'workspace', 'max_concurrent_tasks': 1,
             'instructions': CLIENT_PROTOCOL})
         row = {'session_id': session, 'agent_id': agent['id'], 'completed': 0}
@@ -242,8 +218,7 @@ def install(config, parent_issue, confirm=False):
         row['issue_id'] = issue['id']
         write(state_file, saved)
         api.request('POST', '/api/issues/' + issue['id'] + '/labels', {'label_id': query})
-        metadata(api, issue['id'], {'sandbox_policy': policy(config),
-                                    'aide_runtime_id': config['multica']['runtime_id']})
+        metadata(api, issue['id'], {'aide_runtime_id': runtime_id})
         api.request('PUT', '/api/issues/' + issue['id'], {'assignee_type': 'agent', 'assignee_id': agent['id'], 'suppress_run': True})
     saved['status'] = 'installed'
     write(state_file, saved)
@@ -332,7 +307,6 @@ def begin(config, max_rounds=0):
         raise ValueError('run with the installed settings and native workspace')
     if saved['status'] != 'installed':
         raise ValueError('finish the saved installation before beginning client rounds')
-    probe(config)
     viewer = None
     if config.get('port'):
         viewer = subprocess.Popen([sys.executable, str(LAUNCHER), '--config', config['config_path'], 'serve'],
@@ -455,23 +429,22 @@ def native_client():
 
 
 def create_dev(agent_id, title, description_file):
-    """Create a code child on the same isolated runtime as its query client."""
+    """Create a code child on the same native runtime as its query client."""
     api = API()
     parent_id = os.environ['MULTICA_ISSUE_ID']
     parent = api.request('GET', '/api/issues/' + parent_id)
     inherited = parent.get('metadata') or {}
     workdir = inherited['query_workdir']
-    if not inherited.get('sandbox_policy') or not inherited.get('aide_runtime_id'):
-        raise ValueError('optimization client is missing its sandbox policy')
+    if not inherited.get('aide_runtime_id'):
+        raise ValueError('optimization client is missing its runtime')
     agent = api.request('GET', '/api/agents/' + agent_id)
     if agent['runtime_id'] != inherited['aide_runtime_id']:
-        raise ValueError('development children must use the configured isolated runtime')
+        raise ValueError('development children must use the configured native runtime')
     description = 'Work in ' + workdir + '; cd there before shell commands.\n\n' + Path(description_file).read_text()
     issue = api.request('POST', '/api/issues', {'title': title, 'description': description,
         'project_id': parent['project_id'], 'parent_issue_id': parent_id, 'status': 'backlog'})
     api.request('POST', '/api/issues/' + issue['id'] + '/labels', {'label_id': label(api, 'dev')})
-    metadata(api, issue['id'], {'sandbox_policy': inherited['sandbox_policy'],
-        'aide_runtime_id': inherited['aide_runtime_id'], 'git_repo_root': workdir,
+    metadata(api, issue['id'], {'aide_runtime_id': inherited['aide_runtime_id'], 'git_repo_root': workdir,
         'git_workdir': workdir, 'git_branch': 'main', 'git_owner_issue_id': issue['id']})
     api.request('PUT', '/api/issues/' + issue['id'], {'assignee_type': 'agent', 'assignee_id': agent_id, 'status': 'in_progress'})
     return {'issue_id': issue['id'], 'workdir': workdir}

@@ -42,7 +42,7 @@ def main():
     send.add_argument('--title', required=True)
     send.add_argument('--description', required=True)
     send.add_argument('--review')
-    dev = commands.add_parser('dev', help='delegate a code child with the client checkout and hidden-data policy')
+    dev = commands.add_parser('dev', help='delegate a code child with the client checkout and native runtime')
     dev.add_argument('--agent-id', required=True)
     dev.add_argument('--title', required=True)
     dev.add_argument('--description-file', type=Path, required=True)

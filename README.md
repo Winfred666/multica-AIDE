@@ -10,7 +10,8 @@ Use it in either form:
 
 - **Native campaign:** an installation script guides benchmark preparation;
   the `AIDE_cli` round protocol coordinates N light query clients, a shared solver
-  and official host scoring. Native Multica supplies solution and review workflows.
+  and official host scoring. Native Multica supplies solution and review workflows. Clients inherit the
+  installing agent's native runtime.
 - **Embedded module:** an outer application controls restoration, evaluation and
   phase ordering through the Python API. Independent trees can optimize an outer
   solution and its SOPs in the same application.

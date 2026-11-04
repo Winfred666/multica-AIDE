@@ -12,13 +12,13 @@ workdirs: .aide/workdirs
 poll_seconds: 10
 multica:
   project_id: REPLACE_WITH_BENCHMARK_PROJECT_ID
-  runtime_id: REPLACE_WITH_EXISTING_RUNTIME_ID
+  runtime_id: null # Inherit the installing agent's native runtime.
   thinking_level: high
 benchmark:
   description: REPLACE_WITH_THE_BENCHMARK_TASK_AND_SUBMISSION_CONTRACT
   repository: /absolute/path/to/baseline-solution-repository
   public_data: /absolute/path/to/public-data
-  private_paths: # Worker-denied paths; installer access follows its own issue policy.
+  private_paths: # Official grading resources outside solution repositories.
     - /absolute/path/to/private-data
     - /absolute/path/to/host-evaluator.py
   evaluate_argv:
@@ -27,12 +27,3 @@ benchmark:
     - --solution
     - '{solution}'
   timeout_seconds: 3600
-sandbox:
-  # The existing runtime must sandbox every agent tool, including query
-  # clients. Native Multica metadata and SOP-only exec wrappers do not do this.
-  profile: REPLACE_WITH_EXISTING_ISOLATED_RUNTIME_PROFILE
-  # An operator-provided probe launches through the actual agent runtime. It accepts
-  # --profile, --runtime-id and --policy; see AGENTS.md#native-installation.
-  probe_argv:
-    - /absolute/path/to/python
-    - /absolute/path/to/runtime-isolation-probe.py

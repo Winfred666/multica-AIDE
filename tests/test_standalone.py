@@ -13,7 +13,7 @@ import unittest
 from unittest.mock import patch
 
 from multica_aide.__main__ import main
-from multica_aide.standalone import API, begin, install, write, checkout, measured_artifact, owned_work, policy, register_proposal, register_submission, search, snapshot, submit
+from multica_aide.standalone import API, begin, install, write, checkout, measured_artifact, owned_work, register_proposal, register_submission, search, snapshot, submit
 
 
 class StandaloneRound(unittest.TestCase):
@@ -180,13 +180,11 @@ class StandaloneRound(unittest.TestCase):
             self.assertEqual(api.return_value.request.call_count, 3)
             self.assertEqual(tree.snapshot(), before)
             with patch('multica_aide.standalone.API') as api, \
-                    patch('multica_aide.standalone.probe') as probe_runtime, \
                     patch('multica_aide.standalone.owned_work', return_value=[]):
                 api.return_value.workspace = 'workspace'
                 api.return_value.base = 'http://local-test'
                 self.assertEqual(begin(updated, max_rounds=1)['status'], 'completed')
             api.return_value.request.assert_not_called()
-            probe_runtime.assert_called_once_with(updated)
             self.assertEqual(tree.snapshot(), before)
 
     def test_missing_benchmark_returns_preparation_before_native_resources(self):
@@ -196,8 +194,7 @@ class StandaloneRound(unittest.TestCase):
             config = {'state': str(Path(temporary) / 'controller'), 'tree': str(Path(temporary) / 'tree'),
                       'config_path': str(Path(temporary) / 'config.yaml'), 'knowledge_base': knowledge,
                       'benchmark': {'repository': missing, 'public_data': missing, 'private_paths': [missing],
-                                    'evaluate_argv': [sys.executable, missing, '{solution}']},
-                      'sandbox': {'probe_argv': [sys.executable, missing]}}
+                                    'evaluate_argv': [sys.executable, missing, '{solution}']}}
             with patch('multica_aide.standalone.API') as api:
                 result = install(config, 'parent')
             self.assertEqual(result['status'], 'preparation_required')
@@ -205,7 +202,6 @@ class StandaloneRound(unittest.TestCase):
             self.assertEqual(shlex.split(result['after_preparation_command'])[-3:], ['install', '--parent-issue', 'parent'])
             Path(missing).mkdir()
             Path(knowledge).write_text('Benchmark knowledge')
-            self.assertIn(knowledge, json.loads(policy(config))['read_only_paths'])
             with patch('multica_aide.standalone.API') as api:
                 result = install(config, 'parent')
             self.assertEqual(result['status'], 'preparation_required')

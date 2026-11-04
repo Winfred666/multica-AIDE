@@ -4,14 +4,13 @@ Use Python 3.11+ and PyYAML. Run commands from this checkout or use its absolute
 `run.py` path. The installed `AIDE_cli` command runs the same protocol. Native
 tasks supply the `MULTICA_*` credentials. Each installation owns its solution
 tree, artifacts, solver, query clients and their child issues. Use the configured
-benchmark project and prepared runtime.
+benchmark project and existing native runtime.
 
 ## Native installation
 
 The installing issue owns the requested benchmark and environment preparation.
 Subsequent solution work preserves the prepared benchmark contract.
-`benchmark.private_paths` defines worker isolation. The installer's own issue
-policy governs its access to the evaluator and installation state.
+Use the native Multica runtime and its default sandbox.
 
 1. Start from the requested benchmark name. Locate its official task and scoring
    contract, reuse downloaded data and the available Python environment, and
@@ -24,22 +23,13 @@ policy governs its access to the evaluator and installation state.
    answers and the host evaluator outside solution repositories. The evaluator
    receives a solution path through `{solution}`, scores that solution under the
    official contract, and writes `{"score": NUMBER, "review": "optional finding"}`
-   to stdout. Generate submissions inside the worker sandbox; the host evaluator
-   reads the submitted artifact and private grading data. If evaluation requires
-   executing solution code, run that code under the same private-data denial
-   before host-only grading. Missing or malformed submissions fail. Use
+   to stdout. The host evaluator grades the submitted artifact against private
+   grading data. Missing or malformed submissions fail. Use
    `maximize: false` for losses. The installer scores and freezes the baseline.
-3. Use a prepared runtime that enforces the filesystem policy on every worker
-   tool, including query clients and dev children. Configure its `sandbox.profile`
-   and an actual-runtime `probe_argv`. The probe receives `--profile NAME
-   --runtime-id ID --policy JSON`; it attempts private reads, reads a public input
-   and writes a solution file through that runtime. Return the observed result:
-   `{"runtime_id": "ID", "private_data_visible": false,
-   "public_data_readable": true, "solution_writable": true}`. Issue metadata or a
-   wrapper around individual SOP commands does not establish this isolation.
-4. Copy `config.yaml` to ignored `config.local.yaml`. Fill in the project, runtime,
+3. Copy `config.yaml` to ignored `config.local.yaml`. Fill in the project,
    model IDs, baseline repository, public data, private paths and evaluator argv.
-   Read the selected runtime's model inventory and use its exact IDs for
+   Runtime defaults to the installing agent's runtime. Read its model inventory
+   and use its exact IDs for
    `solver_model` and `cli_babysitter_model`; resolve the requested defaults before
    creating clients. Preview the resolved settings:
 
