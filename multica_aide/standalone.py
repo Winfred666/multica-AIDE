@@ -16,7 +16,7 @@ import yaml
 from . import SearchTree
 
 ACTIVE = {'queued', 'dispatched', 'running', 'deferred', 'waiting_local_directory'}
-LAUNCHER = Path(__file__).resolve().parents[1] / 'run.py'
+LAUNCHER = Path(__file__).resolve().with_name('__main__.py')
 
 
 def read(path):
@@ -119,7 +119,7 @@ def checkout(source, destination):
 
 def policy(config):
     return json.dumps({'deny_paths': config['benchmark']['private_paths'] + [config['state'], config['tree']],
-                       'read_only_paths': [config['benchmark']['public_data'], str(LAUNCHER), str(LAUNCHER.parent / 'multica_aide'), config['config_path']]},
+                       'read_only_paths': [config['benchmark']['public_data'], str(LAUNCHER.parent), config['config_path']]},
                       separators=(',', ':'))
 
 

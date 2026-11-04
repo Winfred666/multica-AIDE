@@ -3,6 +3,11 @@ import argparse
 import json
 import os
 from pathlib import Path
+import sys
+
+if not __package__:
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    __package__ = 'multica_aide'
 
 from .standalone import begin, create_dev, install, load_config, search, submit
 from .viewer import serve
