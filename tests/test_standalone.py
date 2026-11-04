@@ -94,7 +94,15 @@ class ClientSOP(unittest.TestCase):
         self.assertIn(self.progress()['candidate'], test['data']['test_command'])
         self.assertIsNone(search(self.config).snapshot()['nodes'][0]['score'])
         self.assertFalse(self.run_sop('record', '--delivery', json.dumps(delivery), '--review', 'Two\n\nParagraphs.')['accepted'])
-        self.assertEqual(self.run_sop('record', '--delivery', json.dumps(delivery), '--review', 'The baseline is measured.')['status'], 'tested')
+        progress = self.progress()
+        progress['development_issue'] = {'id': 'development'}
+        write(self.workdir / '.aide-client.json', progress)
+        with patch('multica_aide.campaign.API') as api:
+            api.return_value.request.return_value = {'status': 'in_progress'}
+            self.assertFalse(self.run_sop('record', '--delivery', json.dumps(delivery), '--review', 'The baseline is measured.')['accepted'])
+            self.assertIsNone(search(self.config).snapshot()['nodes'][0]['score'])
+            api.return_value.request.return_value = {'status': 'done'}
+            self.assertEqual(self.run_sop('record', '--delivery', json.dumps(delivery), '--review', 'The baseline is measured.')['status'], 'tested')
         self.assertEqual(self.run_sop('continue')['status'], 'idea')
         improved = self.solution(.2)
         self.assertEqual(self.run_sop('test', '--description', 'An improved candidate.')['status'], 'test')

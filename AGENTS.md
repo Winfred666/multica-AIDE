@@ -64,7 +64,7 @@ The idea entry creates a dev child for the configured solver. It uses the curren
 workspace's `multica-subissue-v2/branch_workflow.py` to prepare that candidate's
 owned workdir. Follow the returned development issue through native review and
 acceptance before testing the candidate. The module supplies no development or
-review skills.
+review skills. Score registration requires the dev child's native acceptance.
 
 The controller starts client 1 to establish a measured root, then enables all
 clients. The configured port hosts the read-only tree at `/` and `/tree.json`.

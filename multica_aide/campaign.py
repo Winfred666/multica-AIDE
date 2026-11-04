@@ -174,6 +174,11 @@ def record(args, context):
     try:
         review = paragraph(args.review)
         issue, workdir, progress, config = client(context)
+        development = progress.get('development_issue')
+        if development:
+            child = API().request('GET', '/api/issues/' + development['id'])
+            if child.get('status_category', child['status']) != 'done':
+                raise ValueError('Complete native review and acceptance of development issue ' + development['id'] + ' before scoring.')
         benchmark = contract(config)
         score = benchmark.score(args.delivery)
         if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score):
