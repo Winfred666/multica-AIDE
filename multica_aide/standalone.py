@@ -152,6 +152,13 @@ def metadata(api, issue, values):
 
 def install(config, parent_issue, confirm=False):
     """Report preparation needs, preview settings and install the round protocol."""
+    command = [sys.executable, str(LAUNCHER), '--config', config['config_path']]
+    repeat = [*command, 'install']
+    if parent_issue:
+        repeat.extend(['--parent-issue', parent_issue])
+    preparation = ('Prepare/verify the benchmark and environment using AGENTS.md#native-installation. '
+                   'Solution execution and submission generation must use worker private-data denial; '
+                   'the host evaluator grades submitted artifacts with private data.')
     state_file = Path(config['state']) / 'installation.json'
     if confirm and state_file.exists():
         saved = read(state_file)
@@ -167,17 +174,20 @@ def install(config, parent_issue, confirm=False):
             api.request('PUT', '/api/agents/' + client['agent_id'], {'model': config['cli_babysitter_model'], 'instructions': CLIENT_PROTOCOL})
         saved['config'] = config
         write(state_file, saved)
-        return saved
+        return {**saved, 'next_command': shlex.join([*command, 'begin'])}
     paths = [config['benchmark']['repository'], config['benchmark']['public_data'], *config['benchmark']['private_paths']]
     for argv in (config['benchmark']['evaluate_argv'], config['sandbox']['probe_argv']):
         paths.extend(arg for arg in argv if Path(arg).is_absolute() and '{' not in arg)
     missing = [path for path in dict.fromkeys(paths) if not Path(path).exists()]
     if missing:
         return {'status': 'preparation_required', 'missing_paths': missing, 'config': config,
-                'next_action': 'Prepare the requested benchmark and environment using AGENTS.md#native-installation, then repeat install.'}
+                'next_action': preparation + ' Reuse settings already confirmed, then run next_command.',
+                'next_command': shlex.join(repeat)}
     if not confirm:
         return {'status': 'confirmation_required', 'config': config,
-                'next_action': 'Confirm these settings with the requester, then repeat install with --confirm-config.'}
+                'next_action': preparation + ' Reuse settings already confirmed; confirm any remaining settings '
+                               'with the requester, then run next_command.',
+                'next_command': shlex.join([*repeat, '--confirm-config'])}
     if Path(config['benchmark']['repository']).is_relative_to(config['state']):
         raise ValueError('benchmark repository must be outside the private controller state')
     repository = Path(config['benchmark']['repository'])
@@ -231,7 +241,7 @@ def install(config, parent_issue, confirm=False):
         api.request('PUT', '/api/issues/' + issue['id'], {'assignee_type': 'agent', 'assignee_id': agent['id'], 'suppress_run': True})
     saved['status'] = 'installed'
     write(state_file, saved)
-    return saved
+    return {**saved, 'next_command': shlex.join([*command, 'begin'])}
 
 
 def wake(api, client, content, marker, parent=None):
@@ -320,6 +330,7 @@ def begin(config, max_rounds=0):
         raise ValueError('run with the installed settings and native workspace')
     if saved['status'] != 'installed':
         raise ValueError('finish the saved installation before beginning client rounds')
+    install(config, saved['parent_issue_id'], confirm=True)
     probe(config)
     viewer = None
     if config.get('port'):

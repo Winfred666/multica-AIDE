@@ -2,13 +2,14 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 from pathlib import Path
+import shlex
 import sys
 import tempfile
 import threading
 import unittest
 from unittest.mock import patch
 
-from multica_aide.standalone import API, install, write, checkout, measured_artifact, owned_work, recover_children, register_submission, search, snapshot, submit
+from multica_aide.standalone import API, begin, install, write, checkout, measured_artifact, owned_work, recover_children, register_submission, search, snapshot, submit
 
 
 class StandaloneRound(unittest.TestCase):
@@ -90,18 +91,22 @@ class StandaloneRound(unittest.TestCase):
     def test_confirmed_model_change_preserves_registered_baseline_and_agents(self):
         with tempfile.TemporaryDirectory() as temporary:
             config = {'state': temporary, 'tree': str(Path(temporary) / 'tree'), 'drafts': 2,
+                      'config_path': str(Path(temporary) / 'config.yaml'),
                       'solver_model': 'provider/terra', 'cli_babysitter_model': 'provider/luna'}
             tree = search(config)
             tree.register_baseline('baseline', 'Baseline', 'Official result', .37)
             before = tree.snapshot()
-            clients = [{'agent_id': 'client-1'}, {'agent_id': 'client-2'}]
+            clients = [{'agent_id': 'client-1', 'issue_id': 'query-1', 'completed': 1},
+                       {'agent_id': 'client-2', 'issue_id': 'query-2', 'completed': 1}]
             write(Path(temporary) / 'installation.json', {'config': config, 'status': 'installed',
+                  'workspace_id': 'workspace', 'server_url': 'http://local-test',
                   'solver_id': 'solver', 'parent_issue_id': 'parent', 'clients': clients})
             updated = {**config, 'solver_model': 'provider/sol'}
             with patch('multica_aide.standalone.API') as api:
                 result = install(updated, 'parent', confirm=True)
             self.assertEqual(result['config'], updated)
             self.assertEqual(result['clients'], clients)
+            self.assertEqual(shlex.split(result['next_command'])[-3:], ['--config', config['config_path'], 'begin'])
             self.assertEqual(tree.snapshot(), before)
             updated_solver = api.return_value.request.call_args_list[0].args
             self.assertEqual(updated_solver[:2], ('PUT', '/api/agents/solver'))
@@ -113,11 +118,20 @@ class StandaloneRound(unittest.TestCase):
                 install(updated, 'parent', confirm=True)
             self.assertEqual(api.return_value.request.call_count, 3)
             self.assertEqual(tree.snapshot(), before)
+            with patch('multica_aide.standalone.API') as api, \
+                    patch('multica_aide.standalone.probe') as probe_runtime, \
+                    patch('multica_aide.standalone.owned_work', return_value=([], {})):
+                api.return_value.workspace = 'workspace'
+                api.return_value.base = 'http://local-test'
+                self.assertEqual(begin(updated, max_rounds=1)['status'], 'completed')
+            self.assertEqual(api.return_value.request.call_count, 3)
+            probe_runtime.assert_called_once_with(updated)
+            self.assertEqual(tree.snapshot(), before)
 
     def test_missing_benchmark_returns_preparation_before_native_resources(self):
         with tempfile.TemporaryDirectory() as temporary:
             missing = str(Path(temporary) / 'benchmark')
-            config = {'state': str(Path(temporary) / 'controller'),
+            config = {'state': str(Path(temporary) / 'controller'), 'config_path': str(Path(temporary) / 'config.yaml'),
                       'benchmark': {'repository': missing, 'public_data': missing, 'private_paths': [missing],
                                     'evaluate_argv': [sys.executable, missing, '{solution}']},
                       'sandbox': {'probe_argv': [sys.executable, missing]}}
@@ -125,6 +139,7 @@ class StandaloneRound(unittest.TestCase):
                 result = install(config, 'parent')
             self.assertEqual(result['status'], 'preparation_required')
             self.assertEqual(result['missing_paths'], [missing])
+            self.assertEqual(shlex.split(result['next_command'])[-3:], ['install', '--parent-issue', 'parent'])
             api.assert_not_called()
 
     def test_blocked_dev_child_wakes_its_babysitter_once_per_changed_state(self):
