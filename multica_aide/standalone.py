@@ -209,7 +209,8 @@ def install(config, parent_issue, confirm=False):
 
 def wake(api, client, content):
     api.request('PUT', '/api/issues/' + client['issue_id'], {'status': 'in_progress', 'suppress_run': True})
-    return api.request('POST', '/api/issues/' + client['issue_id'] + '/comments', {'content': content})
+    return api.request('POST', '/api/issues/' + client['issue_id'] + '/comments',
+                       {'content': '[@Client](mention://agent/' + client['agent_id'] + ') ' + content})
 
 
 def completed_node(config):
