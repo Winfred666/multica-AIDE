@@ -3,7 +3,8 @@
 A shared solution tree for Multica optimization. Clients draft independent
 solutions, then refine the best measured node, following
 [Weco's AIDE](https://github.com/wecoai/aideml). Each node records its ID, title,
-description, finite score, optional review and artifact reference.
+description, score, optional review and artifact reference. Register a description
+first with its score pending, then attach the measured score and review.
 
 Use it in either form:
 
@@ -15,7 +16,8 @@ Use it in either form:
   solution and its SOPs in the same application.
 
 Both use the same embeddable HTML tree. Concurrent client sessions share measured
-results and keep their own pending rounds.
+results and keep their own pending rounds. The board shows put-forward time and
+test duration beneath each score. Pending proposals become selectable after scoring.
 
 Install Python 3.11+ and the package:
 

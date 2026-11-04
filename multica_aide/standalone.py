@@ -2,6 +2,7 @@
 import json
 import math
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 import shlex
 import shutil
@@ -17,10 +18,7 @@ from . import SearchTree
 
 ACTIVE = {'queued', 'dispatched', 'running', 'deferred', 'waiting_local_directory'}
 LAUNCHER = Path(__file__).resolve().with_name('__main__.py')
-CLIENT_PROTOCOL = (
-    'Own this client session and its current round context and submission. '
-    'Keep responsibility for blocked child issues until the round completes. '
-    'Native Multica supplies the solution and review workflows.')
+CLIENT_PROTOCOL = 'Follow the current round context; register the node description, then request host scoring.'
 
 
 def read(path):
@@ -122,8 +120,11 @@ def checkout(source, destination):
 
 
 def policy(config):
+    read_only = [config['benchmark']['public_data'], str(LAUNCHER.parent), config['config_path']]
+    if config.get('knowledge_base'):
+        read_only.append(config['knowledge_base'])
     return json.dumps({'deny_paths': config['benchmark']['private_paths'] + [config['state'], config['tree']],
-                       'read_only_paths': [config['benchmark']['public_data'], str(LAUNCHER.parent), config['config_path']]},
+                       'read_only_paths': read_only},
                       separators=(',', ':'))
 
 
@@ -173,6 +174,8 @@ def install(config, parent_issue, confirm=False):
         write(state_file, saved)
         return {**saved, 'next_command': shlex.join([*command, 'begin'])}
     paths = [config['benchmark']['repository'], config['benchmark']['public_data'], *config['benchmark']['private_paths']]
+    if config.get('knowledge_base'):
+        paths.append(config['knowledge_base'])
     for argv in (config['benchmark']['evaluate_argv'], config['sandbox']['probe_argv']):
         paths.extend(arg for arg in argv if Path(arg).is_absolute() and '{' not in arg)
     missing = [path for path in dict.fromkeys(paths) if not Path(path).exists()]
@@ -261,40 +264,23 @@ def wake(api, client, content, marker, parent=None):
 
 
 def owned_work(api, issue_id):
-    """Return active tasks and blocked descendants, including dev work delegated by a client."""
-    pending, active, blocked = [issue_id], [], {}
+    """Return active tasks; unresolved native failures stop the controller."""
+    pending, active = [issue_id], []
     while pending:
         identity = pending.pop()
         issue = api.request('GET', '/api/issues/' + identity)
-        if identity == issue_id and issue['status'] in {'blocked', 'cancelled'}:
-            raise RuntimeError('improvement client ' + identity + ' is ' + issue['status'])
+        if issue['status'] == 'blocked' or (identity == issue_id and issue['status'] == 'cancelled'):
+            raise RuntimeError('Native issue ' + identity + ' is ' + issue['status'])
         tasks = api.request('GET', '/api/issues/' + identity + '/task-runs')
         running = [t for t in tasks if t['status'] in ACTIVE or (t.get('result') or {}).get('process_cleanup_pending')]
         active.extend({**task, 'issue_id': identity} for task in running)
         latest = max(tasks, key=lambda t: (t.get('created_at') or '', t['id']), default=None)
         if not running and latest and latest['status'] in {'failed', 'cancelled'}:
-            if identity == issue_id:
+            if identity == issue_id or issue['status'] not in {'done', 'cancelled'}:
                 raise RuntimeError(f"Native task {latest['id']} on issue {identity} {latest['status']}: "
-                                   + str(latest.get('error') or 'inspect its task result before resuming'))
-            if issue['status'] not in {'done', 'cancelled'}:
-                blocked[identity] = latest['id']
-        if identity != issue_id and issue['status'] == 'blocked':
-            blocked[identity] = (issue.get('updated_at') or 'blocked') + ':' + (latest['id'] if latest else '')
+                                   + str(latest.get('error') or ''))
         pending.extend(child['id'] for child in api.request('GET', '/api/issues/' + identity + '/children')['issues'])
-    return active, blocked
-
-
-def recover_children(api, client, blocked):
-    """Wake the query babysitter once for each changed blocked-child state."""
-    previous = client.get('blocked_states', {})
-    changed = [identity for identity, state in blocked.items() if previous.get(identity) != state]
-    client['blocked_states'] = blocked.copy()
-    if not changed:
-        return
-    client['recoveries'] = client.get('recoveries', 0) + 1
-    round_info = client['round']
-    wake(api, client, 'Resolve blocked child ' + ', '.join(changed) + '; finish current round.',
-         round_info['round_id'] + '-recover-' + str(client['recoveries']), round_info['thread_id'])
+    return active
 
 
 def measured_artifact(config, artifact):
@@ -307,24 +293,37 @@ def measured_artifact(config, artifact):
     return measured
 
 
-def register_submission(config, client):
+def register_proposal(config, client):
+    """Publish the client's description while its official score is pending."""
     round_info = client['round']
     workdir = Path(round_info['workdir'])
     spec = read(workdir / '.aide-submission.json')
     if spec['round_id'] != round_info['round_id']:
         raise ValueError('submission belongs to a different client round')
     artifact = Path(config['state']) / 'artifacts' / round_info['round_id']
+    return search(config).register_description(spec['id'], spec['title'], spec['description'],
+        session_id=client['session_id'], round_id=round_info['round_id'],
+        parent_id=round_info['parent_id'], artifact=str(artifact), put_forward_at=spec.get('put_forward_at'))
+
+
+def register_submission(config, client):
+    node = register_proposal(config, client)
+    if node['score'] is not None:
+        return node
+    workdir = Path(client['round']['workdir'])
+    spec = read(workdir / '.aide-submission.json')
+    if not spec.get('score_requested'):
+        raise ValueError('request host scoring before evaluating the registered description')
+    artifact = Path(node['artifact'])
     if not artifact.exists():
         snapshot(workdir, artifact)
     measured = measured_artifact(config, artifact)
-    return search(config).register(spec['id'], spec['title'], spec['description'], measured['score'],
-        session_id=client['session_id'], round_id=round_info['round_id'],
-        parent_id=round_info['parent_id'], artifact=str(artifact),
-        review=measured.get('review', spec.get('review')))
+    return search(config).register_score(node['id'], measured['score'],
+                                         review=measured.get('review', spec.get('review')))
 
 
 def begin(config, max_rounds=0):
-    """Poll client rounds; query babysitters recover their blocked dev children."""
+    """Poll registrations and scores, opening a new client thread each round."""
     state_file = Path(config['state']) / 'installation.json'
     saved = read(state_file)
     api = API()
@@ -332,7 +331,6 @@ def begin(config, max_rounds=0):
         raise ValueError('run with the installed settings and native workspace')
     if saved['status'] != 'installed':
         raise ValueError('finish the saved installation before beginning client rounds')
-    install(config, saved['parent_issue_id'], confirm=True)
     probe(config)
     viewer = None
     if config.get('port'):
@@ -343,15 +341,9 @@ def begin(config, max_rounds=0):
             if viewer and viewer.poll() is not None:
                 raise RuntimeError('tree viewer exited; fix its configured port before resuming')
             for client in saved['clients']:
-                active, blocked = owned_work(api, client['issue_id'])
-                if blocked:
-                    if not any(task['issue_id'] == client['issue_id'] for task in active):
-                        recover_children(api, client, blocked)
-                        write(state_file, saved)
-                    continue
-                if client.pop('blocked_states', None) is not None:
-                    write(state_file, saved)
-                if active:
+                if client.get('round') and (Path(client['round']['workdir']) / '.aide-submission.json').exists():
+                    register_proposal(config, client)
+                if owned_work(api, client['issue_id']):
                     continue
                 if client.get('round'):
                     round_info = client['round']
@@ -359,8 +351,14 @@ def begin(config, max_rounds=0):
                     submission = workdir / '.aide-submission.json'
                     if not submission.exists():
                         client['reminders'] = client.get('reminders', 0) + 1
-                        wake(api, client, 'Submit the current solution with its title and description using the supplied submit command.',
+                        wake(api, client, 'Register the current node description, then request host scoring using the supplied commands.',
                              round_info['round_id'] + '-submit-' + str(client['reminders']), round_info['thread_id'])
+                        write(state_file, saved)
+                        continue
+                    if not read(submission).get('score_requested'):
+                        client['reminders'] = client.get('reminders', 0) + 1
+                        wake(api, client, 'Request host scoring for the registered node using the supplied score command.',
+                             round_info['round_id'] + '-score-' + str(client['reminders']), round_info['thread_id'])
                         write(state_file, saved)
                         continue
                     node = register_submission(config, client)
@@ -381,9 +379,10 @@ def begin(config, max_rounds=0):
                 prompt = (config['benchmark']['description'] + '\n\n' + json.dumps(context, indent=2) +
                     '\nSolution repository: ' + str(workdir) + '\nPublic data: ' + config['benchmark']['public_data'] +
                     '\nNative work-issue endpoint: ' + quoted + ' dev --agent-id ' + shlex.quote(saved['solver_id']) +
-                    ' --title TITLE --description-file FILE\nCompleted-node submission endpoint: ' +
-                    quoted + ' submit --id ID --title TITLE --description DESCRIPTION\n'
-                    'End after submission. The host evaluator registers the official score and opens your next round.')
+                    ' --title TITLE --description-file FILE\nNode description endpoint: ' +
+                    quoted + ' register --id ID --title TITLE --description DESCRIPTION\nHost scoring endpoint: ' +
+                    quoted + ' score --id ID [--review REVIEW]\n'
+                    'End after requesting scoring. The host registers the official score and opens your next round.')
                 round_info = {key: context[key] for key in ('round_id', 'parent_id')}
                 round_info.update(workdir=str(workdir), thread_id=wake(api, client, prompt, context['round_id']))
                 client['round'] = round_info
@@ -397,19 +396,61 @@ def begin(config, max_rounds=0):
             viewer.wait(timeout=10)
 
 
-def submit(identity, title, description, review=None):
-    value = {'id': identity, 'title': title, 'description': description, 'review': review}
-    if not all(isinstance(value[k], str) and value[k].strip() for k in ('id', 'title', 'description')):
-        raise ValueError('submission needs id, title and description')
-    api = API()
+def client_issue(api):
     issue = api.request('GET', '/api/issues/' + os.environ['MULTICA_ISSUE_ID'])
     inherited = issue.get('metadata') or {}
     if not inherited.get('query_workdir') or not inherited.get('aide_round_id'):
-        raise ValueError('submit belongs to an active improvement client query issue')
+        raise ValueError('submission belongs to an active improvement client query issue')
+    return issue, inherited
+
+
+def describe(identity, title, description):
+    """Request a pending description without ending the native client round."""
+    value = {'id': identity, 'title': title, 'description': description, 'score_requested': False}
+    if not all(isinstance(value[k], str) and value[k].strip() for k in ('id', 'title', 'description')):
+        raise ValueError('submission needs id, title and description')
+    api = API()
+    issue, inherited = client_issue(api)
     value['round_id'] = inherited['aide_round_id']
-    write(Path(inherited['query_workdir']) / '.aide-submission.json', value)
+    path = Path(inherited['query_workdir']) / '.aide-submission.json'
+    if path.exists():
+        previous = read(path)
+        if previous.get('round_id') == value['round_id']:
+            if any(previous.get(key) != value[key] for key in ('id', 'title', 'description')):
+                raise ValueError('the round description is already submitted with different content')
+            return {'status': 'description_submitted', 'id': identity}
+    value['put_forward_at'] = datetime.now(timezone.utc).isoformat()
+    write(path, value)
+    return {'status': 'description_submitted', 'id': identity}
+
+
+def request_score(identity, review=None):
+    """Finish the native round and request authoritative host evaluation."""
+    api = API()
+    issue, inherited = client_issue(api)
+    path = Path(inherited['query_workdir']) / '.aide-submission.json'
+    value = read(path)
+    if value['id'] != identity or value['round_id'] != inherited['aide_round_id']:
+        raise ValueError('score request must identify the registered node in this round')
+    value.update(score_requested=True, review=review)
+    write(path, value)
     api.request('PUT', '/api/issues/' + issue['id'], {'status': 'done', 'suppress_run': True})
-    return {'status': 'submitted', 'next_action': 'End this round; the host evaluator will register its score.'}
+    return {'status': 'submitted', 'next_action': 'End this round; the host will attach its official score and review.'}
+
+
+def submit(identity, title, description, review=None):
+    describe(identity, title, description)
+    return request_score(identity, review)
+
+
+def native_client():
+    """Identify a query worker whose registrations must go through its host."""
+    issue_id = os.environ.get('MULTICA_ISSUE_ID')
+    if not issue_id:
+        return False
+    issue = API().request('GET', '/api/issues/' + issue_id)
+    inherited = issue.get('metadata') or {}
+    return bool(inherited.get('query_workdir') and inherited.get('aide_round_id'))
 
 
 def create_dev(agent_id, title, description_file):

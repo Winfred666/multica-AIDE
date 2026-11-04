@@ -56,12 +56,14 @@ the existing agents' protocol and continue with the saved tree.
 The installation script guides benchmark and environment preparation, confirms
 configuration, and creates N query babysitters and a shared solver with N task
 slots. `AIDE_cli` supplies the round protocol: restore the selected repository,
-open a query thread, expose the `dev` endpoint, and accept `submit` from that query
-issue. Native Multica supplies the solution and review workflows and skills.
-Submission completes the query issue; the host freezes and scores its artifact,
-registers the node and opens the next round. Missing submissions receive a short
-reminder; changed blocked-child states wake their babysitter once. Other failures
-return control to the installing agent for repair and resumption with saved state.
+open a query thread, and expose `dev`, `register` and `score` endpoints.
+`register --id ID --title TITLE --description DESCRIPTION` records the proposal
+with a pending score and its put-forward time. `score --id ID --review TEXT`
+requests official host grading and completes the query issue. The host freezes
+the finished artifact, registers its score, review and test duration, then opens
+the next round. Native Multica owns solution and review workflows, skills and
+issue recovery. Missing registrations receive a short reminder; other failures
+return to the caller with the saved state.
 
 `begin --max-rounds 1` completes one scored round per client for a bounded live
 check. A configured port hosts the HTML tree while `begin` runs; `serve` hosts it
@@ -80,10 +82,11 @@ outer = SearchTree("state/outer", drafts=5)
 outer.register_baseline("baseline", "Original", "Measured baseline", 42,
                         artifact="/snapshots/baseline")
 context = outer.next_context("client-1")
-# Restore context["restore_node"]["artifact"] and run your own phases.
-outer.register("reuse", "Reuse context", "Reduce repeated work", 48,
-               session_id="client-1", round_id=context["round_id"],
-               parent_id=context["parent_id"], artifact="/snapshots/reuse")
+outer.register_description("reuse", "Reuse context", "Reduce repeated work",
+                           session_id="client-1", round_id=context["round_id"],
+                           parent_id=context["parent_id"], artifact="/snapshots/reuse")
+# Restore the selected artifact and run your own phases.
+outer.register_score("reuse", 48, review="Measured result")
 
 cost = SearchTree("state/sop", drafts=2, maximize=False)
 cost.register_baseline("baseline", "Original SOP", "Measured cost", 1.0)
@@ -92,9 +95,18 @@ cost.register_baseline("baseline", "Original SOP", "Measured cost", 1.0)
 `next_context(session_id)` returns JSON-compatible `mode` (`draft` or `refine`),
 `round_id`, `parent_id`, `restore_node`, `tree_summary` and `knowledge_base`.
 Clients share the initial draft budget and measured tree. Repeated calls recover
-that session's pending round; registration completes it. Every registered node
-requires an ID, title, description and finite numeric score; review is optional.
-Keep incomplete proposals and evaluation evidence in the outer application.
+that session's pending round. Description registration creates a visible pending
+node; finite score registration completes the round and makes it selectable.
+Review is optional. AIDE records `put_forward_at`, `scored_at` and
+`test_duration_seconds`; the board labels put-forward time and test duration
+beneath each score. The caller keeps detailed evaluation evidence.
+
+The same CLI supports direct integration:
+
+```sh
+AIDE_cli --config config.local.yaml register --session-id client-1 --id reuse --title 'Reuse context' --description 'Reduce repeated work'
+AIDE_cli --config config.local.yaml score --id reuse --score 48 --review 'Measured result'
+```
 
 Use `cancel_round(session_id, round_id)` after handling an unscored failure.
 `rescore(node_id, score, review=None)` updates a reevaluated aggregate; retain its

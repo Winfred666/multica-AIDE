@@ -15,6 +15,7 @@ main { display:grid; grid-template-columns:minmax(0,1fr) 300px; min-height:calc(
 .node rect { fill:var(--panel); stroke:var(--line); stroke-width:1.5 }
 .node { cursor:pointer; outline:none } .node:focus rect,.node:hover rect,.node.selected rect { stroke:var(--accent); stroke-width:2.5 }
 .node text { fill:var(--ink); font-size:13px; pointer-events:none } .node .metric { fill:var(--accent); font-weight:650 }
+.node .timing { fill:var(--muted); font-size:10px }
 aside { border-left:1px solid var(--line); padding:1.25rem; background:var(--panel); overflow-wrap:anywhere }
 h2 { font-size:1.1rem; margin:0 0 .25rem } h3 { font-size:.85rem; margin:1.5rem 0 .4rem }
 pre { white-space:pre-wrap; font:inherit; margin:0 } #score { color:var(--accent); font-size:1.5rem; font-weight:650 }
@@ -24,7 +25,7 @@ pre { white-space:pre-wrap; font:inherit; margin:0 } #score { color:var(--accent
 <header><h1>__TITLE__</h1><span id="count"></span></header>
 <main>
 <section id="canvas" aria-label="Solution tree"><svg role="group" aria-label="Solution nodes"></svg><p id="empty" hidden>Register a scored baseline to begin.</p></section>
-<aside aria-live="polite"><h2 id="node-title">Select a solution</h2><div class="muted" id="node-id"></div><div id="score"></div><h3>Description</h3><pre id="description"></pre><h3>Review</h3><pre id="review"></pre></aside>
+<aside aria-live="polite"><h2 id="node-title">Select a solution</h2><div class="muted" id="node-id"></div><div id="score"></div><div class="muted" id="put-forward"></div><div class="muted" id="test-duration"></div><h3>Description</h3><pre id="description"></pre><h3>Review</h3><pre id="review"></pre></aside>
 </main>
 <div id="notice" role="status"></div>
 <script type="application/json" id="tree-data">__TREE_DATA__</script>
@@ -33,10 +34,18 @@ const initial=JSON.parse(document.getElementById('tree-data').textContent), svg=
 let nodes=initial.nodes, selected=null;
 const ns='http://www.w3.org/2000/svg', $=id=>document.getElementById(id);
 function element(tag,attrs,parent=svg) { const el=document.createElementNS(ns,tag); Object.entries(attrs).forEach(([k,v])=>el.setAttribute(k,v)); parent.appendChild(el); return el }
+function putForward(node) { return 'Put forward: '+(node.put_forward_at?new Date(node.put_forward_at).toLocaleString():'—') }
+function testDuration(node) {
+  const seconds=node.test_duration_seconds;
+  if(seconds==null)return 'Test duration: '+(node.put_forward_at?'Pending':'—');
+  const whole=Math.floor(seconds), minutes=Math.floor(whole/60), hours=Math.floor(minutes/60);
+  return 'Test duration: '+(hours?`${hours}h ${minutes%60}m ${whole%60}s`:minutes?`${minutes}m ${whole%60}s`:`${Number(seconds.toFixed(1))}s`);
+}
 function inspect(id) {
   const node=nodes.find(n=>n.id===id); if(!node)return; selected=id;
   $('node-title').textContent=node.title; $('node-id').textContent=node.id;
   $('score').textContent=node.score==null?'Pending score':new Intl.NumberFormat(undefined,{maximumFractionDigits:5}).format(node.score);
+  $('put-forward').textContent=putForward(node); $('test-duration').textContent=testDuration(node);
   $('description').textContent=node.description||'';
   $('review').textContent=node.review==null?'No review':typeof node.review==='string'?node.review:JSON.stringify(node.review,null,2);
   svg.querySelectorAll('.node').forEach(el=>el.classList.toggle('selected',el.dataset.id===id));
@@ -50,17 +59,19 @@ function draw() {
     const value=Math.max(0,...parents(byId.get(id)).filter(p=>byId.has(p)).map(p=>depth(p,next)+1)); depths.set(id,value); return value;
   }
   const levels=new Map(); nodes.forEach(n=>{ const d=depth(n.id); if(!levels.has(d))levels.set(d,[]); levels.get(d).push(n) });
-  const width=Math.max(1,...Array.from(levels.values(),rows=>rows.length))*250, height=(Math.max(0,...levels.keys())+1)*130;
+  const width=Math.max(1,...Array.from(levels.values(),rows=>rows.length))*290, height=(Math.max(0,...levels.keys())+1)*170;
   svg.setAttribute('width',width); svg.setAttribute('height',height); svg.setAttribute('viewBox',`0 0 ${width} ${height}`);
-  const positions=new Map(); levels.forEach((rows,d)=>rows.forEach((n,i)=>positions.set(n.id,{x:(width-rows.length*250)/2+i*250+15,y:d*130+15})));
-  nodes.forEach(n=>{ const to=positions.get(n.id); parents(n).forEach(id=>{ const from=positions.get(id); if(from)element('path',{class:'edge',d:`M${from.x+110},${from.y+75} C${from.x+110},${from.y+100} ${to.x+110},${to.y-25} ${to.x+110},${to.y}`}) }) });
+  const positions=new Map(); levels.forEach((rows,d)=>rows.forEach((n,i)=>positions.set(n.id,{x:(width-rows.length*290)/2+i*290+15,y:d*170+15})));
+  nodes.forEach(n=>{ const to=positions.get(n.id); parents(n).forEach(id=>{ const from=positions.get(id); if(from)element('path',{class:'edge',d:`M${from.x+130},${from.y+115} C${from.x+130},${from.y+140} ${to.x+130},${to.y-25} ${to.x+130},${to.y}`}) }) });
   nodes.forEach(n=>{
     const p=positions.get(n.id), group=element('g',{class:'node',transform:`translate(${p.x},${p.y})`,tabindex:0,role:'button','aria-label':`${n.title}, score ${n.score??'pending'}`}); group.dataset.id=n.id;
-    element('rect',{width:220,height:75,rx:9},group);
+    element('rect',{width:260,height:115,rx:9},group);
     const title=element('text',{x:12,y:25},group); title.textContent=n.title.length>27?n.title.slice(0,26)+'…':n.title;
     const full=element('title',{},group); full.textContent=n.title;
     element('text',{x:12,y:52,class:'metric'},group).textContent=n.score==null?'Pending':new Intl.NumberFormat(undefined,{maximumFractionDigits:3}).format(n.score);
     element('text',{x:112,y:52},group).textContent=n.kind||n.mode||'solution';
+    element('text',{x:12,y:77,class:'timing'},group).textContent=putForward(n);
+    element('text',{x:12,y:97,class:'timing'},group).textContent=testDuration(n);
     group.addEventListener('click',()=>inspect(n.id)); group.addEventListener('keydown',event=>{if(event.key==='Enter'||event.key===' '){event.preventDefault(); inspect(n.id)}});
   });
   if(selected&&byId.has(selected))inspect(selected); else if(nodes.length)inspect(nodes[nodes.length-1].id);

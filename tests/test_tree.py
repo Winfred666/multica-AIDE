@@ -1,9 +1,11 @@
 from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from urllib.request import urlopen
 
 from multica_aide import SearchTree, select_parent
@@ -45,6 +47,56 @@ class SharedTree(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "pending round"):
             self.tree.register("wrong-round", "Bad", "Measured elsewhere", 1,
                                session_id="client", round_id="other")
+
+    def test_proposal_stays_pending_until_score_and_preserves_registration_times(self):
+        context = self.tree.next_context("one")
+        put_forward = datetime(2026, 11, 4, 12, 0, tzinfo=timezone.utc)
+        scored = datetime(2026, 11, 4, 12, 0, 7, tzinfo=timezone.utc)
+        with patch('multica_aide.tree.datetime', wraps=datetime) as clock:
+            clock.now.side_effect = [put_forward, scored]
+            proposal = self.tree.register_description('proposal', 'Proposal', 'Awaiting official score',
+                                                      session_id='one', round_id=context['round_id'])
+            self.assertIsNone(proposal['score'])
+            self.assertEqual(proposal['put_forward_at'], put_forward.isoformat())
+            self.assertIsNone(proposal['scored_at'])
+            self.assertEqual(self.tree.next_context('one'), context)
+            # One reserved draft plus its proposal occupies one slot, leaving the second draft available.
+            second = self.tree.next_context('two')
+            self.assertEqual(second['mode'], 'draft')
+            third = self.tree.next_context('three')
+            self.assertEqual(third['mode'], 'refine')
+            self.assertEqual(third['restore_node']['id'], 'baseline')
+            self.assertEqual(third['tree_summary'][1]['put_forward_at'], put_forward.isoformat())
+            retry = self.tree.register_description('proposal', 'Proposal', 'Awaiting official score', session_id='one')
+            self.assertEqual(retry, proposal)
+            with self.assertRaisesRegex(ValueError, 'finite numeric score'):
+                self.tree.register_score('proposal', None)
+            self.assertIn('one', self.tree.snapshot()['sessions'])
+            measured = self.tree.register_score('proposal', 9, review='Official result')
+            self.assertEqual(measured['scored_at'], scored.isoformat())
+            self.assertEqual(measured['test_duration_seconds'], 7)
+            self.assertEqual(self.tree.register_score('proposal', 9, review='Official result'), measured)
+            self.assertEqual(self.tree.register_description('proposal', 'Proposal', 'Awaiting official score',
+                                                            session_id='one'), measured)
+            self.assertEqual(clock.now.call_count, 2)
+        self.assertNotIn('one', self.tree.snapshot()['sessions'])
+        next_round = self.tree.next_context('one')
+        self.assertEqual(next_round['parent_id'], 'proposal')
+        self.assertEqual(self.baseline['put_forward_at'], self.baseline['scored_at'])
+        self.assertEqual(self.baseline['test_duration_seconds'], 0)
+
+    def test_host_preserves_first_cli_registration_time_before_polling(self):
+        queued_at = '2026-11-04T12:00:00+00:00'
+        node = self.tree.register_description('queued', 'Queued', 'First CLI registration',
+                                              session_id='queued-client', put_forward_at=queued_at)
+        self.assertEqual(node['put_forward_at'], queued_at)
+        retry = self.tree.register_description('queued', 'Queued', 'First CLI registration',
+                                               session_id='queued-client', put_forward_at='2026-11-04T12:00:30+00:00')
+        self.assertEqual(retry['put_forward_at'], queued_at)
+        with patch('multica_aide.tree.datetime', wraps=datetime) as clock:
+            clock.now.return_value = datetime(2026, 11, 4, 12, 0, 45, tzinfo=timezone.utc)
+            measured = self.tree.register_score('queued', 8)
+        self.assertEqual(measured['test_duration_seconds'], 45)
 
     def test_outer_controller_registers_after_custom_scoring(self):
         node = self.tree.register("custom", "Custom", "External phase result", 4,
@@ -95,6 +147,8 @@ class SharedTree(unittest.TestCase):
             html = response.read().decode()
         self.assertIn("SOP exploration", html)
         self.assertIn("<svg", html)
+        self.assertIn('Put forward:', html)
+        self.assertIn('Test duration:', html)
         self.assertNotIn("tracks.html", html)
         escaped = render_tree([dict(self.baseline, title="</script><script>bad</script>")])
         self.assertNotIn("</script><script>bad", escaped)
