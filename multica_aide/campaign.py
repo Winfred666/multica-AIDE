@@ -131,9 +131,10 @@ def develop(context, workdir, progress, config):
     spec.loader.exec_module(native)
     installation = read(Path(config['state']) / 'installation.json')
     goal = 'Deliver a minimal template baseline' if progress['baseline'] else 'Improve the selected solution'
+    title = goal + ' (' + progress['session_id'] + ', round ' + str(progress['completed'] + 1) + ')'
     api = API()
     issue = api.request('POST', '/api/issues', {
-        'title': goal, 'description': goal + ' in the benchmark delivery format.\n\n' +
+        'title': title, 'description': goal + ' in the benchmark delivery format.\n\n' +
             config['benchmark']['description'] + '\n\nPublic data: ' + config['benchmark']['public_data'] +
             '\nCandidate repository: ' + progress['candidate'] +
             '\nReturn the solution idea in one paragraph and measured evidence through native Multica.',
