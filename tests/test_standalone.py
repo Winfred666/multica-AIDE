@@ -8,7 +8,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from multica_aide.standalone import API, checkout, measured_artifact, owned_work, recover_children, register_submission, search, snapshot, submit
+from multica_aide.standalone import API, install, write, checkout, measured_artifact, owned_work, recover_children, register_submission, search, snapshot, submit
 
 
 class StandaloneRound(unittest.TestCase):
@@ -76,6 +76,27 @@ class StandaloneRound(unittest.TestCase):
                 finally:
                     server.shutdown()
                     thread.join()
+
+    def test_confirmed_model_change_preserves_registered_baseline_and_agents(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config = {'state': temporary, 'tree': str(Path(temporary) / 'tree'), 'drafts': 2,
+                      'solver_model': 'provider/terra', 'cli_babysitter_model': 'provider/luna'}
+            tree = search(config)
+            tree.register_baseline('baseline', 'Baseline', 'Official result', .37)
+            before = tree.snapshot()
+            clients = [{'agent_id': 'client-1'}, {'agent_id': 'client-2'}]
+            write(Path(temporary) / 'installation.json', {'config': config, 'status': 'installed',
+                  'solver_id': 'solver', 'parent_issue_id': 'parent', 'clients': clients})
+            updated = {**config, 'solver_model': 'provider/sol'}
+            with patch('multica_aide.standalone.API') as api:
+                result = install(updated, 'parent', confirm=True)
+            self.assertEqual(result['config'], updated)
+            self.assertEqual(result['clients'], clients)
+            self.assertEqual(tree.snapshot(), before)
+            self.assertEqual(api.return_value.request.call_args_list[0].args,
+                             ('PUT', '/api/agents/solver', {'model': 'provider/sol'}))
+            self.assertEqual(api.return_value.request.call_count, 3)
+            self.assertEqual(json.loads((Path(temporary) / 'installation.json').read_text())['config'], updated)
 
     def test_blocked_dev_child_wakes_its_babysitter_once_per_changed_state(self):
         class FixtureAPI:

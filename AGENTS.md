@@ -46,6 +46,9 @@ Use the configured benchmark project and prepared runtime.
    python3 run.py --config config.local.yaml begin
    ```
 
+Repeat confirmed `install` after a model change to update the existing agents
+and continue with the saved tree.
+
 The installer creates N query babysitters and a shared solver with N task slots.
 Each round restores a solution repository and opens a new query thread. The
 supplied `dev` command assigns code children to the solver with the client's

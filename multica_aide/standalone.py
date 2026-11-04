@@ -154,11 +154,20 @@ def install(config, parent_issue, confirm=False):
     state_file = Path(config['state']) / 'installation.json'
     if state_file.exists():
         saved = read(state_file)
-        if saved['config'] != config or saved['parent_issue_id'] != parent_issue:
+        model_fields = {'solver_model', 'cli_babysitter_model'}
+        fixed = lambda settings: {key: value for key, value in settings.items() if key not in model_fields}
+        if fixed(saved['config']) != fixed(config) or saved['parent_issue_id'] != parent_issue:
             raise ValueError('installation settings changed; use a new state/tree/workdirs directory')
-        if saved['status'] == 'installed':
-            return saved
-        raise ValueError('installation interrupted; inspect saved resource IDs before retrying')
+        if saved['status'] != 'installed':
+            raise ValueError('installation interrupted; inspect saved resource IDs before retrying')
+        if saved['config'] != config:
+            api = API()
+            api.request('PUT', '/api/agents/' + saved['solver_id'], {'model': config['solver_model']})
+            for client in saved['clients']:
+                api.request('PUT', '/api/agents/' + client['agent_id'], {'model': config['cli_babysitter_model']})
+            saved['config'] = config
+            write(state_file, saved)
+        return saved
     for path in (config['benchmark']['repository'], config['benchmark']['public_data'], *config['benchmark']['private_paths']):
         if not Path(path).exists():
             raise ValueError('missing benchmark resource: ' + path)
@@ -353,7 +362,8 @@ def begin(config, max_rounds=0):
                 checkout(context['restore_node']['artifact'], workdir)
                 metadata(api, client['issue_id'], {'query_workdir': str(workdir), 'aide_round_id': context['round_id']})
                 quoted = shlex.join([sys.executable, str(LAUNCHER)])
-                prompt = (config['benchmark']['description'] + '\n\n' + json.dumps(context, indent=2) +
+                prompt = ('Work in ' + str(workdir) + '; cd there before shell commands.\n\n' +
+                    config['benchmark']['description'] + '\n\n' + json.dumps(context, indent=2) +
                     '\nSolution repository: ' + str(workdir) + '\nPublic data: ' + config['benchmark']['public_data'] +
                     '\nDelegate edits with: ' + quoted + ' dev --agent-id ' + shlex.quote(saved['solver_id']) +
                     ' --title TITLE --description-file FILE\nReview the dev result, then request host scoring with: ' +
@@ -398,7 +408,8 @@ def create_dev(agent_id, title, description_file):
     agent = api.request('GET', '/api/agents/' + agent_id)
     if agent['runtime_id'] != inherited['aide_runtime_id']:
         raise ValueError('development children must use the configured isolated runtime')
-    issue = api.request('POST', '/api/issues', {'title': title, 'description': Path(description_file).read_text(),
+    description = 'Work in ' + workdir + '; cd there before shell commands.\n\n' + Path(description_file).read_text()
+    issue = api.request('POST', '/api/issues', {'title': title, 'description': description,
         'project_id': parent['project_id'], 'parent_issue_id': parent_id, 'status': 'backlog'})
     api.request('POST', '/api/issues/' + issue['id'] + '/labels', {'label_id': label(api, 'dev')})
     metadata(api, issue['id'], {'sandbox_profile': inherited['sandbox_profile'],
