@@ -58,6 +58,12 @@ full JSON delivery and one review paragraph. Missing initialization requirements
 block the client and notify its parent. Native Multica owns development, review,
 sub-issues and exception recovery.
 
+The idea entry creates a dev child for the configured solver. It uses the current
+workspace's `multica-subissue-v2/branch_workflow.py` to prepare that candidate's
+owned workdir. Follow the returned development issue through native review and
+acceptance before testing the candidate. The module supplies no development or
+review skills.
+
 The controller starts client 1 to establish a measured root, then enables all
 clients. The configured port hosts the read-only tree at `/` and `/tree.json`.
 `python3 run.py --config config.local.yaml begin` runs the controller in the

@@ -16,6 +16,9 @@ flowchart TD
 ```
 
 The diamonds are scripted decisions. Each interaction state supplies one option.
+Idea entry hands the candidate to the configured solver in a dev child, using the
+workspace's existing native workdir helper. Native Multica owns its review and
+acceptance.
 The benchmark contract defines `validate(solution)`, `score(delivery)` and
 `is_complete(delivery)`. The full JSON delivery is retained on the node; its numeric
 projection selects future parents. Proposal and score registration record the

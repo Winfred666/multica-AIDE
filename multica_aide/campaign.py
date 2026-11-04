@@ -1,12 +1,13 @@
 """Durable facts shared by the installer and client SOPs."""
 import json
+import importlib.util
 import math
 from pathlib import Path
 import re
 import subprocess
 import sys
 
-from .standalone import API, LAUNCHER, checkout, completed_node, contract, install, load_config, read, search, snapshot, write
+from .standalone import API, LAUNCHER, checkout, completed_node, contract, install, label, load_config, read, search, snapshot, write
 
 
 def paragraph(value):
@@ -21,6 +22,10 @@ def client(context):
     progress = read(workdir / '.aide-client.json')
     config = load_config(progress['config_path'])
     return issue, workdir, progress, config
+
+
+def development_helper():
+    return Path.cwd() / '.pi/skills/multica-subissue-v2/branch_workflow.py'
 
 
 def observe(context):
@@ -64,6 +69,8 @@ def observe(context):
             route = ('test' if repository else 'idea') if progress['session_id'] == 'client-1' else 'waiting'
         else:
             route = 'idea'
+        if route == 'idea' and not development_helper().is_file():
+            data['failures'].append('native development workdir helper')
         data.update(route=route, tree=tree, node=complete, workdir=str(workdir), config=config, progress=progress)
     except (FileNotFoundError, KeyError, ValueError, TypeError, StopIteration, ImportError, SyntaxError) as error:
         data['failures'].append(str(error))
@@ -86,6 +93,8 @@ def block_setup(args, context):
 def prepare_candidate(args, context):
     issue, workdir, progress, config = client(context)
     if progress.get('candidate'):
+        if not progress.get('node_id') and not progress.get('development_issue'):
+            develop(context, workdir, progress, config)
         return {}
     tree = search(config)
     journal = tree.snapshot()
@@ -109,7 +118,32 @@ def prepare_candidate(args, context):
             checkout(round_context['restore_node']['artifact'], candidate)
         progress.update(candidate=str(candidate), baseline=False, round=round_context)
     write(workdir / '.aide-client.json', progress)
+    if not progress.get('node_id'):
+        develop(context, workdir, progress, config)
     return {}
+
+
+def develop(context, workdir, progress, config):
+    """Hand a candidate to the solver using the existing native workdir helper."""
+    helper = development_helper()
+    spec = importlib.util.spec_from_file_location('aide_native_workdir', helper)
+    native = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(native)
+    installation = read(Path(config['state']) / 'installation.json')
+    goal = 'Deliver a minimal template baseline' if progress['baseline'] else 'Improve the selected solution'
+    api = API()
+    issue = api.request('POST', '/api/issues', {
+        'title': goal, 'description': goal + ' in the benchmark delivery format.\n\n' +
+            config['benchmark']['description'] + '\n\nPublic data: ' + config['benchmark']['public_data'] +
+            '\nCandidate repository: ' + progress['candidate'] +
+            '\nReturn the solution idea in one paragraph and measured evidence through native Multica.',
+        'parent_issue_id': context['issue_id'], 'project_id': config['multica']['project_id'], 'status': 'backlog'})
+    api.request('POST', '/api/issues/' + issue['id'] + '/labels', {'label_id': label(api, 'dev')})
+    binding = native.bootstrap(Path(progress['candidate']), issue, context['workspace_id'])
+    progress['development_issue'] = {'id': issue['id'], 'workdir': binding['workdir']}
+    write(workdir / '.aide-client.json', progress)
+    api.request('PUT', '/api/issues/' + issue['id'], {'assignee_type': 'agent',
+        'assignee_id': installation['solver_id'], 'status': 'in_progress'})
 
 
 def describe(args, context):
@@ -162,7 +196,7 @@ def record(args, context):
 
 def next_candidate(args, context):
     issue, workdir, progress, config = client(context)
-    progress.update(candidate=None, node_id=None)
+    progress.update(candidate=None, node_id=None, development_issue=None)
     write(workdir / '.aide-client.json', progress)
     return prepare_candidate(args, context)
 
@@ -184,7 +218,7 @@ def candidate_view(context):
     installation = read(Path(config['state']) / 'installation.json')
     data.update(solver_id=installation['solver_id'], project_id=config['multica']['project_id'],
                 benchmark=config['benchmark']['description'], public_data=config['benchmark']['public_data'],
-                delivery_contract=config['benchmark']['contract'])
+                delivery_contract=config['benchmark']['contract'], development_issue=progress.get('development_issue'))
     if progress.get('node_id'):
         data['node_id'] = progress['node_id']
     return {'data': data}

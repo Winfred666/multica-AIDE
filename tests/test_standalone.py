@@ -45,6 +45,12 @@ class ClientSOP(unittest.TestCase):
         native = patch.object(sop_runtime, 'multica', self.cli)
         native.start()
         self.addCleanup(native.stop)
+        development = patch('multica_aide.campaign.develop')
+        self.develop = development.start()
+        self.addCleanup(development.stop)
+        helper = patch('multica_aide.campaign.development_helper', return_value=Path(__file__))
+        helper.start()
+        self.addCleanup(helper.stop)
 
     def save_settings(self):
         self.config_path.write_text(yaml.safe_dump(self.settings))

@@ -48,7 +48,7 @@ workflow = Workflow(
     State('initialize', 'Check the benchmark, baseline, solution tree and delivery exit condition.',
           initial=True, precheck=initialize, options=entry,
           view=lambda context: {'data': context['initial']}),
-    State('idea', 'Use native development and review with the supplied solver to produce a valid candidate. Describe its idea in one paragraph before testing.',
+    State('idea', 'Follow the supplied development issue through native review and acceptance into the candidate. Describe the solution idea in one paragraph before testing.',
           precheck=phase_check, view=campaign.candidate_view, options=(
               Option('test', 'test', 'Register the idea description and enter test.', campaign.describe,
                      params=(Parameter('--description', 'One paragraph describing this solution idea'),)),
