@@ -7,8 +7,9 @@ description, finite score, optional review and artifact reference.
 
 Use it in either form:
 
-- **Native campaign:** N light query babysitters delegate code work to a shared
-  solver, recover blocked children and submit solutions for official host scoring.
+- **Native campaign:** an installation script guides benchmark preparation;
+  the `AIDE_cli` round protocol coordinates N light query clients, a shared solver
+  and official host scoring. Native Multica supplies solution and review workflows.
 - **Embedded module:** an outer application controls restoration, evaluation and
   phase ordering through the Python API. Independent trees can optimize an outer
   solution and its SOPs in the same application.

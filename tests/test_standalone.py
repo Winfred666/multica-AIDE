@@ -43,12 +43,20 @@ class StandaloneRound(unittest.TestCase):
                     elif self.path.endswith('/children'):
                         value = {'issues': []}
                     else:
-                        value = {'id': 'query', 'status': 'in_progress', 'metadata': {
+                        value = {'id': 'query', 'status': fixture.get('issue_status', 'in_progress'), 'metadata': {
                             'query_workdir': str(workdir), 'aide_round_id': context['round_id']}}
                     payload = json.dumps(value).encode()
                     self.send_response(200)
                     self.end_headers()
                     self.wfile.write(payload)
+
+                def do_PUT(self):
+                    body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                    fixture['issue_status'] = body['status']
+                    fixture['suppress_run'] = body['suppress_run']
+                    self.send_response(200)
+                    self.end_headers()
+                    self.wfile.write(b'{}')
 
                 def log_message(self, *args):
                     pass
@@ -62,6 +70,8 @@ class StandaloneRound(unittest.TestCase):
                     with patch.dict(os.environ, environment):
                         submit('better', 'Better result', 'Measured improvement')
                         self.assertTrue((workdir / '.aide-submission.json').is_file())
+                        self.assertEqual(fixture['issue_status'], 'done')
+                        self.assertTrue(fixture['suppress_run'])
                         node = register_submission(config, client)
                         self.assertEqual(node['score'], 7)
                         self.assertEqual((Path(node['artifact']) / 'value.txt').read_text(), '7')
@@ -96,8 +106,26 @@ class StandaloneRound(unittest.TestCase):
             updated_solver = api.return_value.request.call_args_list[0].args
             self.assertEqual(updated_solver[:2], ('PUT', '/api/agents/solver'))
             self.assertEqual(updated_solver[2]['model'], 'provider/sol')
+            self.assertEqual(updated_solver[2]['instructions'], '')
             self.assertEqual(api.return_value.request.call_count, 3)
             self.assertEqual(json.loads((Path(temporary) / 'installation.json').read_text())['config'], updated)
+            with patch('multica_aide.standalone.API') as api:
+                install(updated, 'parent', confirm=True)
+            self.assertEqual(api.return_value.request.call_count, 3)
+            self.assertEqual(tree.snapshot(), before)
+
+    def test_missing_benchmark_returns_preparation_before_native_resources(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            missing = str(Path(temporary) / 'benchmark')
+            config = {'state': str(Path(temporary) / 'controller'),
+                      'benchmark': {'repository': missing, 'public_data': missing, 'private_paths': [missing],
+                                    'evaluate_argv': [sys.executable, missing, '{solution}']},
+                      'sandbox': {'probe_argv': [sys.executable, missing]}}
+            with patch('multica_aide.standalone.API') as api:
+                result = install(config, 'parent')
+            self.assertEqual(result['status'], 'preparation_required')
+            self.assertEqual(result['missing_paths'], [missing])
+            api.assert_not_called()
 
     def test_blocked_dev_child_wakes_its_babysitter_once_per_changed_state(self):
         class FixtureAPI:

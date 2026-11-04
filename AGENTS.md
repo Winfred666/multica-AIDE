@@ -1,9 +1,10 @@
 # Using multica-AIDE
 
 Use Python 3.11+ and PyYAML. Run commands from this checkout or use its absolute
-`run.py` path. Native tasks supply the `MULTICA_*` credentials. Each installation
-owns its solution tree, artifacts, solver, query clients and their child issues.
-Use the configured benchmark project and prepared runtime.
+`run.py` path. The installed `AIDE_cli` command runs the same protocol. Native
+tasks supply the `MULTICA_*` credentials. Each installation owns its solution
+tree, artifacts, solver, query clients and their child issues. Use the configured
+benchmark project and prepared runtime.
 
 ## Native installation
 
@@ -49,18 +50,18 @@ Use the configured benchmark project and prepared runtime.
    python3 run.py --config config.local.yaml begin
    ```
 
-Repeat confirmed `install` after a model change to update the existing agents
-and continue with the saved tree.
+Repeat confirmed `install` after updating the module or changing models to refresh
+the existing agents' protocol and continue with the saved tree.
 
-The installer creates N query babysitters and a shared solver with N task slots.
-Each round restores a solution repository and opens a new query thread. The
-supplied `dev` command assigns code children to the solver with the client's
-policy. The babysitter reviews their work, handles blocked children through the
-native issue workflow, and invokes `submit` from its query issue. The host loop
-freezes the submission, computes the official score and registers the node.
-Missing submissions receive a short reminder; changed blocked-child states wake
-their babysitter once. Other failures return control to the installing agent for
-repair and resumption with the saved state.
+The installation script guides benchmark and environment preparation, confirms
+configuration, and creates N query babysitters and a shared solver with N task
+slots. `AIDE_cli` supplies the round protocol: restore the selected repository,
+open a query thread, expose the `dev` endpoint, and accept `submit` from that query
+issue. Native Multica supplies the solution and review workflows and skills.
+Submission completes the query issue; the host freezes and scores its artifact,
+registers the node and opens the next round. Missing submissions receive a short
+reminder; changed blocked-child states wake their babysitter once. Other failures
+return control to the installing agent for repair and resumption with saved state.
 
 `begin --max-rounds 1` completes one scored round per client for a bounded live
 check. A configured port hosts the HTML tree while `begin` runs; `serve` hosts it

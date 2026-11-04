@@ -17,15 +17,10 @@ from . import SearchTree
 
 ACTIVE = {'queued', 'dispatched', 'running', 'deferred', 'waiting_local_directory'}
 LAUNCHER = Path(__file__).resolve().with_name('__main__.py')
-SOLVER_INSTRUCTIONS = (
-    'Implement and test the assigned change in the solution repository from issue metadata git_workdir. '
-    'Change to that directory before shell commands. Preserve the official benchmark contract. '
-    'Report blockers to the parent issue.')
-CLIENT_INSTRUCTIONS = (
-    'Own the current round in the solution repository from issue metadata query_workdir. '
-    'Change to that directory before shell commands. Delegate edits to the supplied solver, '
-    'review its result, then submit. Recover blocked or failed dev children through the native issue workflow; '
-    'resume their saved work. Preserve the official benchmark contract.')
+CLIENT_PROTOCOL = (
+    'Own this client session and its current round context and submission. '
+    'Keep responsibility for blocked child issues until the round completes. '
+    'Native Multica supplies the solution and review workflows.')
 
 
 def read(path):
@@ -156,12 +151,9 @@ def metadata(api, issue, values):
 
 
 def install(config, parent_issue, confirm=False):
-    """The first invocation is a configuration preview with no API writes."""
-    if not confirm:
-        return {'status': 'confirmation_required', 'config': config,
-                'next_action': 'Confirm these settings with the requester, then repeat install with --confirm-config.'}
+    """Report preparation needs, preview settings and install the round protocol."""
     state_file = Path(config['state']) / 'installation.json'
-    if state_file.exists():
+    if confirm and state_file.exists():
         saved = read(state_file)
         model_fields = {'solver_model', 'cli_babysitter_model'}
         fixed = lambda settings: {key: value for key, value in settings.items() if key not in model_fields}
@@ -169,17 +161,23 @@ def install(config, parent_issue, confirm=False):
             raise ValueError('installation settings changed; use a new state/tree/workdirs directory')
         if saved['status'] != 'installed':
             raise ValueError('installation interrupted; inspect saved resource IDs before retrying')
-        if saved['config'] != config:
-            api = API()
-            api.request('PUT', '/api/agents/' + saved['solver_id'], {'model': config['solver_model'], 'instructions': SOLVER_INSTRUCTIONS})
-            for client in saved['clients']:
-                api.request('PUT', '/api/agents/' + client['agent_id'], {'model': config['cli_babysitter_model'], 'instructions': CLIENT_INSTRUCTIONS})
-            saved['config'] = config
-            write(state_file, saved)
+        api = API()
+        api.request('PUT', '/api/agents/' + saved['solver_id'], {'model': config['solver_model'], 'instructions': ''})
+        for client in saved['clients']:
+            api.request('PUT', '/api/agents/' + client['agent_id'], {'model': config['cli_babysitter_model'], 'instructions': CLIENT_PROTOCOL})
+        saved['config'] = config
+        write(state_file, saved)
         return saved
-    for path in (config['benchmark']['repository'], config['benchmark']['public_data'], *config['benchmark']['private_paths']):
-        if not Path(path).exists():
-            raise ValueError('missing benchmark resource: ' + path)
+    paths = [config['benchmark']['repository'], config['benchmark']['public_data'], *config['benchmark']['private_paths']]
+    for argv in (config['benchmark']['evaluate_argv'], config['sandbox']['probe_argv']):
+        paths.extend(arg for arg in argv if Path(arg).is_absolute() and '{' not in arg)
+    missing = [path for path in dict.fromkeys(paths) if not Path(path).exists()]
+    if missing:
+        return {'status': 'preparation_required', 'missing_paths': missing, 'config': config,
+                'next_action': 'Prepare the requested benchmark and environment using AGENTS.md#native-installation, then repeat install.'}
+    if not confirm:
+        return {'status': 'confirmation_required', 'config': config,
+                'next_action': 'Confirm these settings with the requester, then repeat install with --confirm-config.'}
     if Path(config['benchmark']['repository']).is_relative_to(config['state']):
         raise ValueError('benchmark repository must be outside the private controller state')
     repository = Path(config['benchmark']['repository'])
@@ -209,8 +207,7 @@ def install(config, parent_issue, confirm=False):
         'name': 'Solution developer', 'description': 'Benchmark solver for issue ' + parent_issue,
         'runtime_id': config['multica']['runtime_id'], 'model': config['solver_model'],
         'thinking_level': config['multica'].get('thinking_level', 'high'),
-        'visibility': 'workspace', 'max_concurrent_tasks': config['clients'],
-        'instructions': SOLVER_INSTRUCTIONS})
+        'visibility': 'workspace', 'max_concurrent_tasks': config['clients']})
     saved['solver_id'] = solver['id']
     write(state_file, saved)
     for n in range(config['clients']):
@@ -219,7 +216,7 @@ def install(config, parent_issue, confirm=False):
             'name': 'Improvement client ' + str(n + 1), 'description': 'Optimization client for issue ' + parent_issue,
             'runtime_id': config['multica']['runtime_id'], 'model': config['cli_babysitter_model'],
             'thinking_level': 'low', 'visibility': 'workspace', 'max_concurrent_tasks': 1,
-            'instructions': CLIENT_INSTRUCTIONS})
+            'instructions': CLIENT_PROTOCOL})
         row = {'session_id': session, 'agent_id': agent['id'], 'completed': 0}
         saved['clients'].append(row)
         write(state_file, saved)
@@ -368,11 +365,10 @@ def begin(config, max_rounds=0):
                 checkout(context['restore_node']['artifact'], workdir)
                 metadata(api, client['issue_id'], {'query_workdir': str(workdir), 'aide_round_id': context['round_id']})
                 quoted = shlex.join([sys.executable, str(LAUNCHER)])
-                prompt = ('Work in ' + str(workdir) + '; cd there before shell commands.\n\n' +
-                    config['benchmark']['description'] + '\n\n' + json.dumps(context, indent=2) +
+                prompt = (config['benchmark']['description'] + '\n\n' + json.dumps(context, indent=2) +
                     '\nSolution repository: ' + str(workdir) + '\nPublic data: ' + config['benchmark']['public_data'] +
-                    '\nDelegate edits with: ' + quoted + ' dev --agent-id ' + shlex.quote(saved['solver_id']) +
-                    ' --title TITLE --description-file FILE\nReview the dev result, then request host scoring with: ' +
+                    '\nNative work-issue endpoint: ' + quoted + ' dev --agent-id ' + shlex.quote(saved['solver_id']) +
+                    ' --title TITLE --description-file FILE\nCompleted-node submission endpoint: ' +
                     quoted + ' submit --id ID --title TITLE --description DESCRIPTION\n'
                     'End after submission. The host evaluator registers the official score and opens your next round.')
                 round_info = {key: context[key] for key in ('round_id', 'parent_id')}
@@ -399,6 +395,7 @@ def submit(identity, title, description, review=None):
         raise ValueError('submit belongs to an active improvement client query issue')
     value['round_id'] = inherited['aide_round_id']
     write(Path(inherited['query_workdir']) / '.aide-submission.json', value)
+    api.request('PUT', '/api/issues/' + issue['id'], {'status': 'done', 'suppress_run': True})
     return {'status': 'submitted', 'next_action': 'End this round; the host evaluator will register its score.'}
 
 
