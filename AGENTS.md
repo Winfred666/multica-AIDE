@@ -18,8 +18,11 @@ Use the configured benchmark project and prepared runtime.
    answers and the host evaluator outside solution repositories. The evaluator
    receives a solution path through `{solution}`, scores that solution under the
    official contract, and writes `{"score": NUMBER, "review": "optional finding"}`
-   to stdout. Missing or malformed submissions fail. Use `maximize: false` for
-   losses. The installer scores and freezes the baseline.
+   to stdout. Generate submissions inside the worker sandbox; the host evaluator
+   reads the submitted artifact and private grading data. If evaluation requires
+   executing solution code, run that code under the same private-data denial
+   before host-only grading. Missing or malformed submissions fail. Use
+   `maximize: false` for losses. The installer scores and freezes the baseline.
 3. Use a prepared runtime that enforces the filesystem policy on every worker
    tool, including query clients and dev children. Configure its `sandbox.profile`
    and an actual-runtime `probe_argv`. The probe receives `--profile NAME
