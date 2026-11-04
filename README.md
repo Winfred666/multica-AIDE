@@ -1,37 +1,31 @@
 # multica-AIDE
 
-A shared solution tree for Multica optimization. Clients draft independent
-solutions, then refine the best measured node, following
-[Weco's AIDE](https://github.com/wecoai/aideml). Each node records its ID, title,
-description, score, optional review and artifact reference. Register a description
-first with its score pending, then attach the measured score and review.
+A shared solution tree for Multica optimization, following
+[Weco's AIDE](https://github.com/wecoai/aideml). Clients draft independent solutions,
+then refine the best measured node. Each node holds an ID, title, description,
+score, optional review and artifact reference.
 
-Use it in either form:
+Register the description first with a pending score, then the measured delivery
+and review. Deliveries can be JSON; the benchmark supplies a numeric ranking
+function and an exit condition on the full delivery. The HTML canvas shows the
+tree, put-forward time and test duration.
 
-- **Native campaign:** an installation script guides benchmark preparation;
-  the `AIDE_cli` round protocol coordinates N light query clients, a shared solver
-  and official host scoring. Native Multica supplies solution and review workflows. Clients inherit the
-  installing agent's native runtime.
-- **Embedded module:** an outer application controls restoration, evaluation and
-  phase ordering through the Python API. Independent trees can optimize an outer
-  solution and its SOPs in the same application.
+Use it in two ways:
 
-Both use the same embeddable HTML tree. Concurrent client sessions share measured
-results and keep their own pending rounds. The board shows put-forward time and
-test duration beneath each score. Pending proposals become selectable after scoring.
+- **Install in an issue:** the [installation SOP](multica_aide/skills/multica-aide-install/SKILL.md)
+  guides benchmark preparation, configuration and native client creation. Each
+  client follows the [AIDE CLI SOP](multica_aide/skills/multica-aide-cli/SKILL.md)
+  through integrity checks, ideas and measured tests. Native Multica provides
+  solution development, review and recovery.
+- **Embed in a larger application:** use `SearchTree` between the application's
+  phases and embed its canvas in an iframe. Independent trees can optimize both
+  an outer solution and its SOPs.
 
-Install Python 3.11+ and the package:
-
-```sh
-python3 -m pip install -e .
-```
-
-A clone also supports `python3 run.py` with PyYAML installed. Read
-[AGENTS.md](AGENTS.md) for [native installation](AGENTS.md#native-installation)
-or [embedding](AGENTS.md#embedding).
+Use Python 3.11+ and install with `python3 -m pip install -e .`, or run from a clone
+with PyYAML installed. [AGENTS.md](AGENTS.md) gives the two usage paths and benchmark
+contract. Direct installation starts with `python3 run.py install`.
 
 [config.yaml](config.yaml) defaults to five drafts, two clients, port 3003,
-no knowledge base, `solver_model: gpt-6.1-terra` and
-`cli_babysitter_model: gpt-6-luna`. Set the benchmark, runtime and host evaluator
-for each installation. Local configuration, solution artifacts and journals stay
-outside version control.
+no knowledge base, solver `gpt-6.1-terra` and babysitter `gpt-6-luna`. Installation
+confirms these settings and inherits the installer's native runtime. Local
+configuration, datasets, solution artifacts and journals stay outside version control.

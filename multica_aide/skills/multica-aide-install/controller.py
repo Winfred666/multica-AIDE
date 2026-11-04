@@ -1,0 +1,24 @@
+"""Prepare, confirm, install and start one native campaign."""
+from pathlib import Path
+
+from sop import Option, Parameter, State, Workflow
+from multica_aide import campaign
+from multica_aide.standalone import install
+
+
+def settings(context):
+    return {'data': install(campaign.installer_config(), context['issue_id'])}
+
+
+workflow = Workflow(
+    State('prepare', 'Prepare the requested official benchmark, delivery contract and local configuration. Reuse downloaded data, the Python environment and native runtime.',
+          initial=True, options=(
+              Option('prepare', 'confirm', 'Validate the prepared benchmark and display configuration.', campaign.prepare_install,
+                     params=(Parameter('--settings', 'Path to config.local.yaml', type=Path),)),
+          )),
+    State('confirm', 'Confirm D, N, models, port, knowledge base and benchmark settings; reuse answers already given.',
+          view=settings, options=(Option('install', 'installed', 'Install the confirmed configuration.', campaign.confirm_install),)),
+    State('installed', 'The native clients are prepared. Start their SOP loop and HTML board.',
+          options=(Option('start', 'running', 'Start the campaign.', campaign.start_install),)),
+    State('running', 'The controller is running. Keep the parent issue active until the benchmark goal is delivered.', final=True),
+)

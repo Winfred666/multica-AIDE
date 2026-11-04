@@ -16,8 +16,9 @@ multica:
   thinking_level: high
 benchmark:
   description: REPLACE_WITH_THE_BENCHMARK_TASK_AND_SUBMISSION_CONTRACT
-  repository: /absolute/path/to/baseline-solution-repository
+  repository: null # A provided baseline repository, or null for an empty idea.
   public_data: /absolute/path/to/public-data
+  contract: /absolute/path/to/benchmark-contract.py # validate, score, is_complete
   private_paths: # Official grading resources outside solution repositories.
     - /absolute/path/to/private-data
     - /absolute/path/to/host-evaluator.py

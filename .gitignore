@@ -16,3 +16,7 @@ config.local*.yml
 .env
 .env.*
 *.log
+
+.state/
+.errors/
+.aide-install.json

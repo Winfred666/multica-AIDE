@@ -1,71 +1,74 @@
 # Using multica-AIDE
 
-Use Python 3.11+ and PyYAML. Run commands from this checkout or use its absolute
-`run.py` path. The installed `AIDE_cli` command runs the same protocol. Native
-tasks supply the `MULTICA_*` credentials. Each installation owns its solution
-tree, artifacts, solver, query clients and their child issues. Use the configured
-benchmark project and existing native runtime.
+Use Python 3.11+ and PyYAML. Native tasks supply the `MULTICA_*` credentials.
+Use the existing Multica runtime and its default sandbox.
 
-## Native installation
+## Install in an issue
 
-The installing issue owns the requested benchmark and environment preparation.
-Subsequent solution work preserves the prepared benchmark contract.
-Use the native Multica runtime and its default sandbox.
+Follow [multica-aide-install](multica_aide/skills/multica-aide-install/SKILL.md).
+Start its SOP from the checkout:
 
-1. Start from the requested benchmark name. Locate its official task and scoring
-   contract, reuse downloaded data and the available Python environment, and
-   prepare one benchmark project with a runnable baseline solution repository.
-   Bind its repository, public-data and environment resources to this prepared
-   benchmark.
-   For MLE-bench or AutoExam, use the benchmark's official preparation, split,
-   submission format and evaluator. Record the source links in the project.
-2. Keep public development inputs available to workers. Put hidden examples,
-   answers and the host evaluator outside solution repositories. The evaluator
-   receives a solution path through `{solution}`, scores that solution under the
-   official contract, and writes `{"score": NUMBER, "review": "optional finding"}`
-   to stdout. The host evaluator grades the submitted artifact against private
-   grading data. Missing or malformed submissions fail. Use
-   `maximize: false` for losses. The installer scores and freezes the baseline.
-3. Copy `config.yaml` to ignored `config.local.yaml`. Fill in the project,
-   model IDs, baseline repository, public data, private paths and evaluator argv.
-   Runtime defaults to the installing agent's runtime. Read its model inventory
-   and use its exact IDs for
-   `solver_model` and `cli_babysitter_model`; resolve the requested defaults before
-   creating clients. Preview the resolved settings:
+```sh
+python3 run.py install
+```
 
-   ```sh
-   python3 run.py --config config.local.yaml install
-   ```
+Follow the returned option commands in order. The installing issue prepares the
+benchmark and environment, confirms settings, creates the native clients, and
+starts the controller and HTML board. Keep the parent issue active until a
+measured solution meets the requested goal. Reuse configuration answers already
+given, including draft count D, client count N, models, port and knowledge base.
+Before editing installed software, stop its controller and native tasks. Preserve
+the measured tree and artifacts.
 
-   Complete the returned preparation action before running
-   `after_preparation_command`. Confirm D, N, solver and babysitter models, viewer
-   port, knowledge base and benchmark settings with the requester, reusing answers
-   already given. Once installed, run the returned `next_command` to begin.
+Start with the requested benchmark name, downloaded data and Python environment.
+Locate the official task, data split, submission format and evaluator; record the
+source links in the benchmark project. For MLE-bench or AutoExam, preserve that
+benchmark's official scoring contract. Prepare and bind the benchmark repository,
+public data and environment using native Multica resources. Keep private grading
+data and the evaluator outside solution repositories.
 
-Repeat confirmed `install` after updating the module or changing models to refresh
-the existing agents' protocol and continue with the saved tree.
+Copy `config.yaml` to ignored `config.local.yaml` and set the benchmark project,
+resource paths and exact available model IDs. Runtime defaults to the installer's
+runtime. The default solver is `gpt-6.1-terra`; the client babysitter defaults to
+`gpt-6-luna`. Resolve these against the runtime's model inventory before installing.
 
-The installation script guides benchmark and environment preparation, confirms
-configuration, and creates N query babysitters and a shared solver with N task
-slots. `AIDE_cli` supplies the round protocol: restore the selected repository,
-open a query thread, and expose `dev`, `register` and `score` endpoints.
-`register --id ID --title TITLE --description DESCRIPTION` records the proposal
-with a pending score and its put-forward time. `score --id ID --review TEXT`
-requests official host grading and completes the query issue. The host freezes
-the finished artifact, registers its score, review and test duration, then opens
-the next round. Native Multica owns solution and review workflows, skills and
-issue recovery. Missing registrations receive a short reminder; other failures
-return to the caller with the saved state.
+The benchmark supplies two parts:
 
-`begin --max-rounds 1` completes one scored round per client for a bounded live
-check. A configured port hosts the HTML tree while `begin` runs; `serve` hosts it
-separately. Before editing an installed module, stop the controller and its owned
-native tasks. Preserve measured nodes, artifacts and pending round state.
+- `evaluate_argv`: the official test command, with `{solution}` replaced by the
+  candidate repository. It writes a JSON delivery to stdout and fails on malformed
+  submissions. The delivery can include metrics, validity and other goal evidence.
+- `contract`: a Python file defining `validate(solution) -> bool` for the delivery
+  format, `score(delivery) -> number` for ranking, and
+  `is_complete(delivery) -> bool` for the requested exit condition. Set
+  `maximize: false` for losses. The exit condition must express the requested
+  measurable goal; a running process or pending node is not completion.
 
-## Embedding
+`benchmark.repository` is optional. With no baseline, the first client receives an
+empty candidate and produces a minimal template baseline in the testable delivery
+format. A supplied untested baseline enters test directly. A known measured
+baseline may include `baseline_delivery`, `baseline_description` and
+`baseline_review`. Existing scored nodes are checked for completion before new work.
 
-Use the Python API between your own phases. Give independent optimization loops
-separate tree directories; the caller owns scoring and artifact restoration.
+Each of the N query clients follows
+[multica-aide-cli](multica_aide/skills/multica-aide-cli/SKILL.md). `AIDE_cli` runs
+that SOP when the package is installed. The SOP checks benchmark integrity, then
+supplies the candidate path, selected tree context and official test command.
+Each idea needs one description paragraph before test; each measurement needs the
+full JSON delivery and one review paragraph. Missing initialization requirements
+block the client and notify its parent. Native Multica owns development, review,
+sub-issues and exception recovery.
+
+The controller starts client 1 to establish a measured root, then enables all
+clients. The configured port hosts the read-only tree at `/` and `/tree.json`.
+`python3 run.py --config config.local.yaml begin` runs the controller in the
+foreground; `serve` hosts the tree independently.
+
+## Embed in a larger module
+
+Use the Python API between the caller's phases. Give independent optimization
+loops separate tree directories. The caller owns restoration, development,
+evaluation, phase ordering and termination; it does not run the installer or client
+SOP.
 
 ```python
 from multica_aide import SearchTree
@@ -76,8 +79,8 @@ outer.register_baseline("baseline", "Original", "Measured baseline", 42,
 context = outer.next_context("client-1")
 outer.register_description("reuse", "Reuse context", "Reduce repeated work",
                            session_id="client-1", round_id=context["round_id"],
-                           parent_id=context["parent_id"], artifact="/snapshots/reuse")
-# Restore the selected artifact and run your own phases.
+                           artifact="/snapshots/reuse")
+# Restore context["restore_node"] and run the caller's phases.
 outer.register_score("reuse", 48, review="Measured result")
 
 cost = SearchTree("state/sop", drafts=2, maximize=False)
@@ -86,36 +89,33 @@ cost.register_baseline("baseline", "Original SOP", "Measured cost", 1.0)
 
 `next_context(session_id)` returns JSON-compatible `mode` (`draft` or `refine`),
 `round_id`, `parent_id`, `restore_node`, `tree_summary` and `knowledge_base`.
-Clients share the initial draft budget and measured tree. Repeated calls recover
-that session's pending round. Description registration creates a visible pending
-node; finite score registration completes the round and makes it selectable.
-Review is optional. AIDE records `put_forward_at`, `scored_at` and
-`test_duration_seconds`; the board labels put-forward time and test duration
-beneath each score. The caller keeps detailed evaluation evidence.
+Concurrent sessions share the draft budget and measured tree. Repeated calls
+return the session's pending round. Description registration creates a pending
+node; score registration makes it selectable and completes that round. Use
+`register_baseline_description(..., session_id=...)` for an untested root.
 
-The same CLI supports direct integration:
-
-```sh
-AIDE_cli --config config.local.yaml register --session-id client-1 --id reuse --title 'Reuse context' --description 'Reduce repeated work'
-AIDE_cli --config config.local.yaml score --id reuse --score 48 --review 'Measured result'
-```
+For structured deliveries, construct the tree with
+`score_function=lambda delivery: delivery["metrics"]["loss"]`. Registration keeps
+that full JSON as `node["delivery"]` and its finite numeric projection as
+`node["score"]`. The caller can evaluate any exit condition on the full delivery.
+Review is optional in the embedding API.
 
 Use `cancel_round(session_id, round_id)` after handling an unscored failure.
-`rescore(node_id, score, review=None)` updates a reevaluated aggregate; retain its
-observations in the caller. `next_context(session_id, eligible_ids={...})` limits
-new parent selections to nodes passing the caller's current gates. This preserves
-archived nodes and completed drafts. An existing pending round stays unchanged.
-`snapshot()` returns the journal and pending sessions.
+`rescore(node_id, delivery, review=None)` updates a reevaluated aggregate.
+`next_context(session_id, eligible_ids={...})` restricts new parent selection to
+nodes passing the caller's gates. `snapshot()` returns nodes and pending sessions.
 
-Embed the same widget for each tree:
+Embed the same canvas in each optimization panel:
 
 ```python
 from multica_aide.viewer import render_tree, serve
 
 html = render_tree(outer.snapshot()["nodes"])
-# Place the HTML in your panel's iframe, or host it:
+# Place this HTML in the caller's iframe, or host it:
 serve(outer, port=3003)
 ```
 
-The read-only server exposes `/` and `/tree.json`. Integrations call the tree API
-between their own phases and use the shared canvas in their own panels.
+AIDE records `put_forward_at` at description registration and `scored_at` and
+`test_duration_seconds` at score registration. The canvas labels put-forward time
+and test duration beneath the score. Keep detailed evaluation evidence with the
+caller. Generated state, data, artifacts, logs and local configuration stay ignored.

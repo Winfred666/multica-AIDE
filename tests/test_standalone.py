@@ -1,213 +1,130 @@
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from contextlib import redirect_stderr, redirect_stdout
-from datetime import datetime
-import io
 import json
-import os
 from pathlib import Path
-import shlex
+import shutil
 import sys
 import tempfile
-import threading
 import unittest
 from unittest.mock import patch
+import yaml
+from multica_aide import sop_runtime
+from multica_aide.standalone import SKILLS, evaluate, load_config, read, search, write
 
-from multica_aide.__main__ import main
-from multica_aide.standalone import API, begin, install, write, checkout, measured_artifact, owned_work, register_proposal, register_submission, search, snapshot, submit
 
+class ClientSOP(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.skill = self.root / 'skill'
+        shutil.copytree(SKILLS / 'multica-aide-cli', self.skill)
+        runtime_root = patch.object(sop_runtime, 'ROOT', self.skill)
+        runtime_root.start()
+        self.addCleanup(runtime_root.stop)
+        self.controller = sop_runtime.load_controller()
+        self.contract = self.root / 'contract.py'
+        self.contract.write_text("from pathlib import Path\ndef validate(solution): return (Path(solution)/'submission.json').is_file()\ndef score(delivery): return delivery['metrics']['loss']\ndef is_complete(delivery): return delivery['metrics']['loss'] <= 0.25\n")
+        evaluator = self.root / 'evaluate.py'
+        evaluator.write_text("import json,sys\nfrom pathlib import Path\nx=json.loads((Path(sys.argv[1])/'submission.json').read_text())\nprint(json.dumps({'metrics':{'loss':x['loss']},'valid':True}))\n")
+        public = self.root / 'public'
+        public.mkdir()
+        self.config_path = self.root / 'config.local.yaml'
+        self.settings = {'drafts': 2, 'clients': 2, 'port': None, 'maximize': False,
+            'tree': str(self.root / 'tree'), 'state': str(self.root / 'controller'),
+            'workdirs': str(self.root / 'workdirs'), 'multica': {'project_id': 'project', 'runtime_id': None},
+            'benchmark': {'description': 'Improve the benchmark loss.', 'repository': None,
+                'public_data': str(public), 'private_paths': [], 'contract': str(self.contract),
+                'evaluate_argv': [sys.executable, str(evaluator), '{solution}']}}
+        self.save_settings()
+        self.workdir = self.root / 'client'
+        self.workdir.mkdir()
+        write(self.workdir / '.aide-client.json', {'config_path': str(self.config_path), 'session_id': 'client-1',
+            'completed': 0, 'candidate': None, 'node_id': None, 'finished': False})
+        self.issue = {'id': 'client-issue', 'workspace_id': 'workspace', 'parent_issue_id': 'parent',
+                      'status': 'in_progress', 'metadata': {'query_workdir': str(self.workdir)}}
+        self.calls = []
+        native = patch.object(sop_runtime, 'multica', self.cli)
+        native.start()
+        self.addCleanup(native.stop)
 
-class StandaloneRound(unittest.TestCase):
-    def test_host_scores_frozen_submission_and_task_failure_returns_to_setup(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            original = root / 'original'
-            original.mkdir()
-            (original / 'value.txt').write_text('2')
-            evaluator = root / 'evaluator.py'
-            evaluator.write_text('import json,sys\nfrom pathlib import Path\n'
-                                 'tree=Path(sys.argv[2])\n'
-                                 'if tree.exists():\n'
-                                 ' node=next(n for n in json.loads(tree.read_text())["nodes"] if n["id"]=="better")\n'
-                                 ' assert node["score"] is None and node["put_forward_at"]\n'
-                                 'print(json.dumps({"score":float((Path(sys.argv[1])/"value.txt").read_text()),'
-                                 '"review":"Official host review"}))\n')
-            config = {'tree': str(root / 'tree'), 'state': str(root / 'controller'), 'drafts': 1,
-                      'benchmark': {'evaluate_argv': [sys.executable, str(evaluator), '{solution}',
-                                                     str(root / 'tree/tree.json')]}}
-            baseline = root / 'controller/artifacts/baseline'
-            snapshot(original, baseline)
-            search(config).register_baseline('baseline', 'Baseline', 'Original result',
-                                             measured_artifact(config, baseline)['score'], artifact=str(baseline))
-            context = search(config).next_context('client')
-            workdir = root / 'workdir'
-            checkout(context['restore_node']['artifact'], workdir)
-            (workdir / 'value.txt').write_text('7')
-            client = {'session_id': 'client', 'round': {'workdir': str(workdir),
-                      'round_id': context['round_id'], 'parent_id': context['parent_id']}}
-            fixture = {'tasks': [{'id': 'task-failed', 'status': 'failed', 'created_at': '2026-01-01',
-                                  'error': 'runtime launch failed'}]}
+    def save_settings(self):
+        self.config_path.write_text(yaml.safe_dump(self.settings))
+        self.config = load_config(self.config_path)
+        write(Path(self.config['state']) / 'installation.json', {'solver_id': 'solver'})
 
-            class Handler(BaseHTTPRequestHandler):
-                def do_GET(self):
-                    if self.path.endswith('/task-runs'):
-                        value = fixture['tasks']
-                    elif self.path.endswith('/children'):
-                        value = {'issues': []}
-                    else:
-                        value = {'id': 'query', 'status': fixture.get('issue_status', 'in_progress'), 'metadata': {
-                            'query_workdir': str(workdir), 'aide_round_id': context['round_id']}}
-                    payload = json.dumps(value).encode()
-                    self.send_response(200)
-                    self.end_headers()
-                    self.wfile.write(payload)
+    def cli(self, *words):
+        self.calls.append(words)
+        if words[0] == 'get': return self.issue
+        if words[0] == 'status': self.issue['status'] = words[2]; return self.issue
+        if words[:2] == ('comment', 'add'): return {'id': 'comment'}
+        raise AssertionError(words)
 
-                def do_PUT(self):
-                    body = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
-                    fixture['issue_status'] = body['status']
-                    fixture['suppress_run'] = body['suppress_run']
-                    self.send_response(200)
-                    self.end_headers()
-                    self.wfile.write(b'{}')
+    def run_sop(self, *argv):
+        args = sop_runtime.arguments(list(argv), self.controller)
+        context = {'task_id': 'native-test-task', 'issue_id': self.issue['id'], 'workspace_id': 'workspace',
+                   'agent_id': 'client', 'argv': list(argv)}
+        return sop_runtime.transition(args, context, self.controller)
 
-                def log_message(self, *args):
-                    pass
+    def progress(self):
+        return read(self.workdir / '.aide-client.json')
 
-            with ThreadingHTTPServer(('127.0.0.1', 0), Handler) as server:
-                thread = threading.Thread(target=server.serve_forever, daemon=True)
-                thread.start()
-                environment = {'MULTICA_SERVER_URL': f'http://127.0.0.1:{server.server_port}',
-                               'MULTICA_TOKEN': 'local-test', 'MULTICA_WORKSPACE_ID': 'test', 'MULTICA_ISSUE_ID': 'query'}
-                try:
-                    with patch.dict(os.environ, environment):
-                        with patch.object(sys, 'argv', ['AIDE_cli', 'register', '--id', 'better',
-                                          '--title', 'Better result', '--description', 'Measured improvement']), \
-                                redirect_stdout(io.StringIO()):
-                            main()
-                        self.assertTrue((workdir / '.aide-submission.json').is_file())
-                        self.assertNotIn('issue_status', fixture)
-                        pending = register_proposal(config, client)
-                        self.assertIsNone(pending['score'])
-                        self.assertIsNone(pending['review'])
-                        self.assertTrue(pending['put_forward_at'])
-                        self.assertEqual(pending['put_forward_at'],
-                                         json.loads((workdir / '.aide-submission.json').read_text())['put_forward_at'])
-                        self.assertFalse(Path(pending['artifact']).exists())
-                        self.assertIn('client', search(config).snapshot()['sessions'])
-                        with self.assertRaisesRegex(ValueError, 'request host scoring'):
-                            register_submission(config, client)
-                        with patch.object(sys, 'argv', ['AIDE_cli', 'score', '--id', 'better', '--score', '999']), \
-                                redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
-                            main()
-                        with patch.object(sys, 'argv', ['AIDE_cli', 'score', '--id', 'better', '--review', 'Client note']), \
-                                redirect_stdout(io.StringIO()):
-                            main()
-                        self.assertEqual(fixture['issue_status'], 'done')
-                        self.assertTrue(fixture['suppress_run'])
-                        submit('better', 'Better result', 'Measured improvement', 'Client note')
-                        node = register_submission(config, client)
-                        self.assertEqual(node['score'], 7)
-                        self.assertEqual(node['review'], 'Official host review')
-                        self.assertEqual(node['put_forward_at'], pending['put_forward_at'])
-                        self.assertGreaterEqual(datetime.fromisoformat(node['scored_at']),
-                                                datetime.fromisoformat(node['put_forward_at']))
-                        self.assertGreaterEqual(node['test_duration_seconds'], 0)
-                        self.assertEqual((Path(node['artifact']) / 'value.txt').read_text(), '7')
-                        self.assertFalse((Path(node['artifact']) / '.aide-submission.json').exists())
-                        (workdir / 'value.txt').write_text('99')
-                        self.assertEqual(register_submission(config, client), node)
-                        self.assertEqual(search(config).snapshot()['sessions'], {})
-                        with self.assertRaisesRegex(RuntimeError, 'task-failed.*runtime launch failed'):
-                            owned_work(API(), 'query')
-                        fixture['tasks'].append({'id': 'task-fixed', 'created_at': '2026-01-02', 'status': 'completed'})
-                        self.assertEqual(owned_work(API(), 'query'), [])
-                finally:
-                    server.shutdown()
-                    thread.join()
+    def solution(self, loss):
+        path = Path(self.progress()['candidate'])
+        (path / 'submission.json').write_text(json.dumps({'loss': loss}))
+        return evaluate(self.config, path)
 
-    def test_direct_cli_register_then_score_updates_the_same_node(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            config = {'tree': temporary, 'drafts': 1}
-            tree = search(config)
-            tree.register_baseline('baseline', 'Baseline', 'Measured baseline', .2)
-            context = tree.next_context('embedded-client')
-            with patch.dict(os.environ, {}, clear=True), \
-                    patch('multica_aide.__main__.load_config', return_value=config):
-                with patch.object(sys, 'argv', ['AIDE_cli', 'describe', '--id', 'candidate', '--title', 'Candidate',
-                                  '--description', 'Proposed change', '--session-id', 'embedded-client',
-                                  '--round-id', context['round_id']]), redirect_stdout(io.StringIO()):
-                    main()
-                proposed = tree.snapshot()['nodes'][-1]
-                self.assertIsNone(proposed['score'])
-                with patch.object(sys, 'argv', ['AIDE_cli', 'score', '--id', 'candidate', '--score', '.8',
-                                  '--review', 'Measured result']), redirect_stdout(io.StringIO()):
-                    main()
-            state = tree.snapshot()
-            self.assertEqual(len(state['nodes']), 2)
-            final = state['nodes'][-1]
-            self.assertEqual(final['id'], proposed['id'])
-            self.assertEqual(final['put_forward_at'], proposed['put_forward_at'])
-            self.assertEqual((final['score'], final['review']), (.8, 'Measured result'))
-            self.assertEqual(state['sessions'], {})
+    def test_empty_baseline_then_draft_requires_description_delivery_and_review(self):
+        self.assertEqual(self.run_sop()['status'], 'initialize')
+        self.assertFalse(self.run_sop('record', '--delivery', '{}', '--review', 'Premature.')['accepted'])
+        self.assertEqual(search(self.config).snapshot()['nodes'], [])
+        self.assertEqual(self.run_sop('enter')['status'], 'idea')
+        self.assertFalse(self.run_sop('test', '--description', 'A minimal template baseline.')['accepted'])
+        delivery = self.solution(.9)
+        self.assertEqual(self.run_sop('test', '--description', 'A minimal template baseline.')['status'], 'test')
+        self.assertIsNone(search(self.config).snapshot()['nodes'][0]['score'])
+        self.assertFalse(self.run_sop('record', '--delivery', json.dumps(delivery), '--review', 'Two\n\nParagraphs.')['accepted'])
+        self.assertEqual(self.run_sop('record', '--delivery', json.dumps(delivery), '--review', 'The baseline is measured.')['status'], 'tested')
+        self.assertEqual(self.run_sop('continue')['status'], 'idea')
+        improved = self.solution(.2)
+        self.assertEqual(self.run_sop('test', '--description', 'An improved candidate.')['status'], 'test')
+        self.assertEqual(self.run_sop('record', '--delivery', json.dumps(improved), '--review', 'The measured loss meets the goal.')['status'], 'tested')
+        result = self.run_sop('continue')
+        self.assertTrue(result['finished'])
+        self.assertEqual(result['data']['node']['delivery'], improved)
+        self.assertEqual(result['data']['node']['score'], .2)
+        self.assertEqual(self.issue['status'], 'in_progress')
+        self.assertGreaterEqual(result['data']['node']['test_duration_seconds'], 0)
+        self.assertEqual(len(search(self.config).snapshot()['nodes']), 2)
 
-    def test_confirmed_model_change_preserves_registered_baseline_and_agents(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            config = {'state': temporary, 'tree': str(Path(temporary) / 'tree'), 'drafts': 2,
-                      'config_path': str(Path(temporary) / 'config.yaml'),
-                      'solver_model': 'provider/terra', 'cli_babysitter_model': 'provider/luna'}
-            tree = search(config)
-            tree.register_baseline('baseline', 'Baseline', 'Official result', .37)
-            before = tree.snapshot()
-            clients = [{'agent_id': 'client-1', 'issue_id': 'query-1', 'completed': 1},
-                       {'agent_id': 'client-2', 'issue_id': 'query-2', 'completed': 1}]
-            write(Path(temporary) / 'installation.json', {'config': config, 'status': 'installed',
-                  'workspace_id': 'workspace', 'server_url': 'http://local-test',
-                  'solver_id': 'solver', 'parent_issue_id': 'parent', 'clients': clients})
-            updated = {**config, 'solver_model': 'provider/sol'}
-            with patch('multica_aide.standalone.API') as api:
-                result = install(updated, 'parent', confirm=True)
-            self.assertEqual(result['config'], updated)
-            self.assertEqual(result['clients'], clients)
-            self.assertEqual(shlex.split(result['next_command'])[-3:], ['--config', config['config_path'], 'begin'])
-            self.assertEqual(tree.snapshot(), before)
-            updated_solver = api.return_value.request.call_args_list[0].args
-            self.assertEqual(updated_solver[:2], ('PUT', '/api/agents/solver'))
-            self.assertEqual(updated_solver[2]['model'], 'provider/sol')
-            self.assertEqual(updated_solver[2]['instructions'], '')
-            self.assertEqual(api.return_value.request.call_count, 3)
-            self.assertEqual(json.loads((Path(temporary) / 'installation.json').read_text())['config'], updated)
-            with patch('multica_aide.standalone.API') as api:
-                install(updated, 'parent', confirm=True)
-            self.assertEqual(api.return_value.request.call_count, 3)
-            self.assertEqual(tree.snapshot(), before)
-            with patch('multica_aide.standalone.API') as api, \
-                    patch('multica_aide.standalone.owned_work', return_value=[]):
-                api.return_value.workspace = 'workspace'
-                api.return_value.base = 'http://local-test'
-                self.assertEqual(begin(updated, max_rounds=1)['status'], 'completed')
-            api.return_value.request.assert_not_called()
-            self.assertEqual(tree.snapshot(), before)
+    def test_existing_untested_baseline_enters_test_without_an_idea_round(self):
+        repository = self.root / 'baseline'
+        repository.mkdir()
+        (repository / 'submission.json').write_text('{"loss": 0.9}')
+        self.settings['benchmark']['repository'] = str(repository)
+        self.save_settings()
+        self.assertEqual(self.run_sop()['data']['route'], 'test')
+        self.assertEqual(self.run_sop('enter')['status'], 'test')
+        self.assertIsNone(search(self.config).snapshot()['nodes'][0]['score'])
+        self.assertFalse(self.run_sop('test', '--description', 'Cannot skip the pending test.')['accepted'])
 
-    def test_missing_benchmark_returns_preparation_before_native_resources(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            missing = str(Path(temporary) / 'benchmark')
-            knowledge = str(Path(temporary) / 'knowledge.md')
-            config = {'state': str(Path(temporary) / 'controller'), 'tree': str(Path(temporary) / 'tree'),
-                      'config_path': str(Path(temporary) / 'config.yaml'), 'knowledge_base': knowledge,
-                      'benchmark': {'repository': missing, 'public_data': missing, 'private_paths': [missing],
-                                    'evaluate_argv': [sys.executable, missing, '{solution}']}}
-            with patch('multica_aide.standalone.API') as api:
-                result = install(config, 'parent')
-            self.assertEqual(result['status'], 'preparation_required')
-            self.assertEqual(result['missing_paths'], [missing, knowledge])
-            self.assertEqual(shlex.split(result['after_preparation_command'])[-3:], ['install', '--parent-issue', 'parent'])
-            Path(missing).mkdir()
-            Path(knowledge).write_text('Benchmark knowledge')
-            with patch('multica_aide.standalone.API') as api:
-                result = install(config, 'parent')
-            self.assertEqual(result['status'], 'preparation_required')
-            self.assertNotIn('next_command', result)
-            self.assertEqual(shlex.split(result['after_preparation_command'])[-1], '--confirm-config')
-            api.assert_not_called()
+    def test_existing_passing_delivery_exits_before_creating_a_candidate(self):
+        artifact = self.root / 'passing'
+        artifact.mkdir()
+        (artifact / 'submission.json').write_text('{"loss": 0.2}')
+        delivery = evaluate(self.config, artifact)
+        search(self.config).register_baseline('baseline', 'Passing', 'Already measured.', delivery, artifact=str(artifact))
+        result = self.run_sop()
+        self.assertTrue(result['finished'])
+        self.assertEqual(result['data']['node']['delivery'], delivery)
+        self.assertIsNone(self.progress()['candidate'])
+
+    def test_missing_contract_blocks_and_notifies_parent_at_initialization(self):
+        self.contract.unlink()
+        self.assertEqual(self.run_sop()['data']['route'], 'needs_setup')
+        self.assertEqual(self.run_sop('enter')['status'], 'needs_setup')
+        self.assertEqual(self.issue['status'], 'blocked')
+        notification = next(c for c in self.calls if c[:3] == ('comment', 'add', 'parent'))
+        self.assertIn('check is failed, failed to enter init state', notification[-1])
+
 
 if __name__ == '__main__':
     unittest.main()

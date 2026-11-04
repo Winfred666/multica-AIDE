@@ -53,7 +53,7 @@ def _node(identity, title, description, score=None, **fields):
 class SearchTree:
     """Persist one shared journal; callers own artifacts and score computation."""
 
-    def __init__(self, path, drafts=5, knowledge_base=None, maximize=True):
+    def __init__(self, path, drafts=5, knowledge_base=None, maximize=True, score_function=None):
         if type(drafts) is not int or drafts < 0:
             raise ValueError("drafts must be a nonnegative integer")
         if not isinstance(maximize, bool):
@@ -62,6 +62,7 @@ class SearchTree:
         self.drafts = drafts
         self.knowledge_base = str(knowledge_base) if knowledge_base is not None else None
         self.maximize = maximize
+        self.score_function = score_function or _score
 
     @contextmanager
     def _state(self):
@@ -84,7 +85,7 @@ class SearchTree:
             return state
 
     def register_baseline(self, id, title, description, score, artifact=None, review=None):
-        node = _node(id, title, description, _score(score), artifact=artifact, review=review,
+        node = _node(id, title, description, _score(self.score_function(score)), delivery=score, artifact=artifact, review=review,
                      parent_id=None, kind="baseline", session_id=None, round_id=None)
         with self._state() as state:
             existing = next((n for n in state["nodes"] if n["id"] == id), None)
@@ -100,6 +101,23 @@ class SearchTree:
             self._save(state)
         return node
 
+    def register_baseline_description(self, id, title, description, *, session_id, artifact=None):
+        """Register the untested root before its first measurement."""
+        node = _node(id, title, description, artifact=artifact, review=None, parent_id=None,
+                     kind='baseline', session_id=session_id, round_id=None)
+        with self._state() as state:
+            if state['baseline_id'] is not None:
+                existing = next(n for n in state['nodes'] if n['id'] == state['baseline_id'])
+                if existing['id'] == id and existing['session_id'] == session_id:
+                    return existing
+                raise ValueError('another baseline is already registered')
+            timestamp = datetime.now(timezone.utc).isoformat()
+            node.update(created_at=timestamp, put_forward_at=timestamp, scored_at=None, test_duration_seconds=None)
+            state['nodes'].append(node)
+            state['baseline_id'] = id
+            self._save(state)
+        return node
+
     def next_context(self, session_id, *, eligible_ids=None):
         if not isinstance(session_id, str) or not session_id.strip():
             raise ValueError("a client session_id is required")
@@ -110,11 +128,13 @@ class SearchTree:
                 raise ValueError("register a scored baseline before starting clients")
             selected = select_parent(state['nodes'], self.drafts, self.maximize, state["sessions"].values(), eligible_ids)
             baseline = next(n for n in state["nodes"] if n["id"] == state["baseline_id"])
+            if baseline['score'] is None:
+                raise ValueError('score the baseline before starting improvement rounds')
             context = {"session_id": session_id, "round_id": uuid.uuid4().hex,
                        "mode": "refine" if selected else "draft", "parent_id": selected["id"] if selected else None,
                        "restore_node": selected or baseline,
                        "tree_summary": [{k: node.get(k) for k in ("id", "title", "description", "review", "score", "parent_id", "kind",
-                                                                "put_forward_at", "scored_at", "test_duration_seconds")}
+                                                                "delivery", "put_forward_at", "scored_at", "test_duration_seconds")}
                                         for node in state["nodes"]],
                        "knowledge_base": self.knowledge_base}
             state["sessions"][session_id] = context
@@ -135,7 +155,7 @@ class SearchTree:
 
     def rescore(self, id, score, review=None):
         """Update a reevaluated node; its caller retains the measurement evidence."""
-        _score(score)
+        delivery, score = score, _score(self.score_function(score))
         with self._state() as state:
             node = next((n for n in state['nodes'] if n['id'] == id), None)
             if node is None:
@@ -143,6 +163,7 @@ class SearchTree:
             if node['score'] is None:
                 raise ValueError('register the initial score before reevaluation')
             node['score'] = score
+            node['delivery'] = delivery
             if review is not None:
                 node['review'] = review
             self._save(state)
@@ -194,12 +215,13 @@ class SearchTree:
             return node
 
     def _finish_score(self, state, node, score, review):
+        delivery, score = score, _score(self.score_function(score))
         if node["score"] is not None:
-            if node["score"] == score and node["review"] == review:
+            if node["score"] == score and node["review"] == review and node.get('delivery', score) == delivery:
                 return node
             raise ValueError("node score is already registered with different content; use rescore for reevaluation")
         scored_at = datetime.now(timezone.utc)
-        node.update(score=score, review=review, scored_at=scored_at.isoformat(),
+        node.update(score=score, delivery=delivery, review=review, scored_at=scored_at.isoformat(),
                     test_duration_seconds=(scored_at - datetime.fromisoformat(node["put_forward_at"])).total_seconds())
         pending = state["sessions"].get(node["session_id"])
         if pending and pending["round_id"] == node["round_id"]:
@@ -208,7 +230,7 @@ class SearchTree:
 
     def register_score(self, id, score, review=None):
         """Record a proposal's measured result and complete its matching round."""
-        _score(score)
+        _score(self.score_function(score))
         with self._state() as state:
             node = next((n for n in state["nodes"] if n["id"] == id), None)
             if node is None:
@@ -220,7 +242,7 @@ class SearchTree:
     def register(self, id, title, description, score, *, session_id, round_id=None, parent_id=None,
                  artifact=None, review=None, metadata=None):
         """Publish a measured node in one call, completing its pending round."""
-        _score(score)
+        _score(self.score_function(score))
         with self._state() as state:
             node = self._description(state, id, title, description, session_id, round_id, parent_id, artifact, metadata)
             self._finish_score(state, node, score, review)
