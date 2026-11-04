@@ -131,6 +131,13 @@ def develop(context, workdir, progress, config):
     spec = importlib.util.spec_from_file_location('aide_native_workdir', helper)
     native = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(native)
+    candidate = Path(progress['candidate'])
+    parent = context['cli']('get', context['issue_id'])
+    native.record_branch(candidate, 'main', 'main', parent, context['workspace_id'])
+    for key, value in {'git_repo_root': str(candidate), 'git_workdir': str(candidate),
+                       'git_branch': 'main', 'git_base_branch': 'main',
+                       'git_owner_issue_id': parent['id']}.items():
+        native.bind(parent, key, value)
     installation = read(Path(config['state']) / 'installation.json')
     goal = 'Deliver a minimal template baseline' if progress['baseline'] else 'Improve the selected solution'
     title = goal + ' (' + progress['session_id'] + ', round ' + str(progress['completed'] + 1) + ')'
@@ -142,7 +149,7 @@ def develop(context, workdir, progress, config):
             '\nReturn the solution idea in one paragraph and measured evidence through native Multica.',
         'parent_issue_id': context['issue_id'], 'project_id': config['multica']['project_id'], 'status': 'backlog'})
     api.request('POST', '/api/issues/' + issue['id'] + '/labels', {'label_id': label(api, 'dev')})
-    binding = native.bootstrap(Path(progress['candidate']), issue, context['workspace_id'])
+    binding = native.bootstrap(candidate, issue, context['workspace_id'])
     progress['development_issue'] = {'id': issue['id'], 'workdir': binding['workdir']}
     write(workdir / '.aide-client.json', progress)
     api.request('PUT', '/api/issues/' + issue['id'], {'assignee_type': 'agent',
