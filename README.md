@@ -1,17 +1,20 @@
 # multica-AIDE
 
-A small AIDE search module for Multica. Each installation owns a scored baseline,
-a shared solution tree, and independent client sessions. Clients draft solutions,
-then refine the best measured node. The search follows the draft and improvement
-loop in [Weco's AIDE](https://github.com/wecoai/aideml).
-Standalone clients use light babysitters for round control and blocked-child
-recovery, with a shared `gpt-6.1-terra` solver for dev work. Configure
-`solver_model` and `cli_babysitter_model` for the available runtime models.
+A shared solution tree for Multica optimization. Clients draft independent
+solutions, then refine the best measured node, following
+[Weco's AIDE](https://github.com/wecoai/aideml). Each node records its ID, title,
+description, finite score, optional review and artifact reference.
 
-A node contains `id`, `title`, `description`, numeric `score`, optional `review`,
-lineage and an artifact reference. The module rejects missing and nonfinite
-scores. Outer applications own benchmark evaluation, artifact restoration and
-phase ordering.
+Use it in either form:
+
+- **Native campaign:** N light query babysitters delegate code work to a shared
+  solver, recover blocked children and submit solutions for official host scoring.
+- **Embedded module:** an outer application controls restoration, evaluation and
+  phase ordering through the Python API. Independent trees can optimize an outer
+  solution and its SOPs in the same application.
+
+Both use the same embeddable HTML tree. Concurrent client sessions share measured
+results and keep their own pending rounds.
 
 Install Python 3.11+ and the package:
 
@@ -19,13 +22,12 @@ Install Python 3.11+ and the package:
 python3 -m pip install -e .
 ```
 
-You can also run `python3 /path/to/multica-AIDE/run.py` from a clone with PyYAML
-installed. Credentials come from the current native task's `MULTICA_*` environment.
+A clone also supports `python3 run.py` with PyYAML installed. Read
+[AGENTS.md](AGENTS.md) for [native installation](AGENTS.md#native-installation)
+or [embedding](AGENTS.md#embedding).
 
-- [Install in a Multica issue](docs/installation.md): run N query clients against one benchmark project.
-- [Embed in another module](docs/integration.md): call tree methods between your own phases and embed the HTML widget.
-- [Prepare a benchmark](skills/multica-create-bench/SKILL.md): define public inputs, hidden evaluation and official scoring.
-
-`config.yaml` supplies the installation settings. `install` previews the resolved
-configuration before `--confirm-config` creates resources. Generated trees,
-solutions and local configuration stay outside version control.
+[config.yaml](config.yaml) defaults to five drafts, two clients, port 3003,
+no knowledge base, `solver_model: gpt-6.1-terra` and
+`cli_babysitter_model: gpt-6-luna`. Set the benchmark, runtime and host evaluator
+for each installation. Local configuration, solution artifacts and journals stay
+outside version control.

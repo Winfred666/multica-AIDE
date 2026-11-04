@@ -1,4 +1,4 @@
-# Copy to config.local.yaml and confirm the resolved settings before installation.
+# Copy to config.local.yaml; follow AGENTS.md and reuse confirmed settings.
 drafts: 5
 clients: 2
 port: 3003 # null disables the loop's background HTML server.
@@ -32,7 +32,7 @@ sandbox:
   # clients. Native Multica metadata and SOP-only exec wrappers do not do this.
   profile: REPLACE_WITH_EXISTING_ISOLATED_RUNTIME_PROFILE
   # An operator-provided probe launches through the actual agent runtime. It accepts
-  # --profile, --runtime-id and --policy; see docs/installation.md.
+  # --profile, --runtime-id and --policy; see AGENTS.md#native-installation.
   probe_argv:
     - /absolute/path/to/python
     - /absolute/path/to/runtime-isolation-probe.py
