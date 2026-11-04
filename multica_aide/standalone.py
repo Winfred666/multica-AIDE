@@ -186,8 +186,9 @@ def install(config, parent_issue, confirm=False):
                 'missing_paths': missing, 'after_preparation_command': shlex.join(repeat), 'config': config}
     if not confirm:
         return {'status': 'preparation_required',
-                'next_action': 'Read the evaluator implementation invoked by '
+                'next_action': 'As the installing issue, read the evaluator implementation invoked by '
                                + shlex.join(config['benchmark']['evaluate_argv']) + '. '
+                               'benchmark.private_paths defines worker isolation; installer reads follow the installing issue policy. '
                                'Ensure solution execution and submission generation use worker private-data denial '
                                'before the host evaluator grades submitted artifacts with private data. '
                                'Complete this preparation, reuse confirmed settings and confirm any remaining settings '

@@ -10,6 +10,8 @@ benchmark project and prepared runtime.
 
 The installing issue owns the requested benchmark and environment preparation.
 Subsequent solution work preserves the prepared benchmark contract.
+`benchmark.private_paths` defines worker isolation. The installer's own issue
+policy governs its access to the evaluator and installation state.
 
 1. Start from the requested benchmark name. Locate its official task and scoring
    contract, reuse downloaded data and the available Python environment, and

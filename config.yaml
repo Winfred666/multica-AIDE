@@ -18,7 +18,7 @@ benchmark:
   description: REPLACE_WITH_THE_BENCHMARK_TASK_AND_SUBMISSION_CONTRACT
   repository: /absolute/path/to/baseline-solution-repository
   public_data: /absolute/path/to/public-data
-  private_paths:
+  private_paths: # Worker-denied paths; installer access follows its own issue policy.
     - /absolute/path/to/private-data
     - /absolute/path/to/host-evaluator.py
   evaluate_argv:
