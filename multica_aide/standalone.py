@@ -156,9 +156,6 @@ def install(config, parent_issue, confirm=False):
     repeat = [*command, 'install']
     if parent_issue:
         repeat.extend(['--parent-issue', parent_issue])
-    preparation = ('Prepare/verify the benchmark and environment using AGENTS.md#native-installation. '
-                   'Solution execution and submission generation must use worker private-data denial; '
-                   'the host evaluator grades submitted artifacts with private data.')
     state_file = Path(config['state']) / 'installation.json'
     if confirm and state_file.exists():
         saved = read(state_file)
@@ -180,14 +177,19 @@ def install(config, parent_issue, confirm=False):
         paths.extend(arg for arg in argv if Path(arg).is_absolute() and '{' not in arg)
     missing = [path for path in dict.fromkeys(paths) if not Path(path).exists()]
     if missing:
-        return {'status': 'preparation_required', 'missing_paths': missing, 'config': config,
-                'next_action': preparation + ' Reuse settings already confirmed, then run next_command.',
-                'next_command': shlex.join(repeat)}
+        return {'status': 'preparation_required',
+                'next_action': 'Prepare the missing benchmark and environment resources using '
+                               'AGENTS.md#native-installation, reuse settings already confirmed, then run after_preparation_command.',
+                'missing_paths': missing, 'after_preparation_command': shlex.join(repeat), 'config': config}
     if not confirm:
-        return {'status': 'confirmation_required', 'config': config,
-                'next_action': preparation + ' Reuse settings already confirmed; confirm any remaining settings '
-                               'with the requester, then run next_command.',
-                'next_command': shlex.join([*repeat, '--confirm-config'])}
+        return {'status': 'preparation_required',
+                'next_action': 'Read the evaluator implementation invoked by '
+                               + shlex.join(config['benchmark']['evaluate_argv']) + '. '
+                               'Ensure solution execution and submission generation use worker private-data denial '
+                               'before the host evaluator grades submitted artifacts with private data. '
+                               'Complete this preparation, reuse confirmed settings and confirm any remaining settings '
+                               'before running after_preparation_command.',
+                'after_preparation_command': shlex.join([*repeat, '--confirm-config']), 'config': config}
     if Path(config['benchmark']['repository']).is_relative_to(config['state']):
         raise ValueError('benchmark repository must be outside the private controller state')
     repository = Path(config['benchmark']['repository'])

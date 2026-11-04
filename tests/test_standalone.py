@@ -139,7 +139,13 @@ class StandaloneRound(unittest.TestCase):
                 result = install(config, 'parent')
             self.assertEqual(result['status'], 'preparation_required')
             self.assertEqual(result['missing_paths'], [missing])
-            self.assertEqual(shlex.split(result['next_command'])[-3:], ['install', '--parent-issue', 'parent'])
+            self.assertEqual(shlex.split(result['after_preparation_command'])[-3:], ['install', '--parent-issue', 'parent'])
+            Path(missing).mkdir()
+            with patch('multica_aide.standalone.API') as api:
+                result = install(config, 'parent')
+            self.assertEqual(result['status'], 'preparation_required')
+            self.assertNotIn('next_command', result)
+            self.assertEqual(shlex.split(result['after_preparation_command'])[-1], '--confirm-config')
             api.assert_not_called()
 
     def test_blocked_dev_child_wakes_its_babysitter_once_per_changed_state(self):

@@ -8,6 +8,9 @@ benchmark project and prepared runtime.
 
 ## Native installation
 
+The installing issue owns the requested benchmark and environment preparation.
+Subsequent solution work preserves the prepared benchmark contract.
+
 1. Start from the requested benchmark name. Locate its official task and scoring
    contract, reuse downloaded data and the available Python environment, and
    prepare one benchmark project with a runnable baseline solution repository.
@@ -42,13 +45,10 @@ benchmark project and prepared runtime.
    python3 run.py --config config.local.yaml install
    ```
 
-   Confirm D, N, solver and babysitter models, viewer port, knowledge base and
-   benchmark settings with the requester. Reuse answers already given. Then run:
-
-   ```sh
-   python3 run.py --config config.local.yaml install --confirm-config
-   python3 run.py --config config.local.yaml begin
-   ```
+   Complete the returned preparation action before running
+   `after_preparation_command`. Confirm D, N, solver and babysitter models, viewer
+   port, knowledge base and benchmark settings with the requester, reusing answers
+   already given. Once installed, run the returned `next_command` to begin.
 
 Repeat confirmed `install` after updating the module or changing models to refresh
 the existing agents' protocol and continue with the saved tree.
