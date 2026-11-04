@@ -137,6 +137,22 @@ class ClientSOP(unittest.TestCase):
         self.assertEqual(result['data']['node']['delivery'], delivery)
         self.assertIsNone(self.progress()['candidate'])
 
+    def test_existing_development_resumes_without_preparing_another_workdir(self):
+        artifact = self.root / 'baseline'
+        artifact.mkdir()
+        (artifact / 'submission.json').write_text('{"loss": 0.9}')
+        search(self.config).register_baseline('baseline', 'Baseline', 'Measured.',
+            evaluate(self.config, artifact), artifact=str(artifact))
+        candidate = self.root / 'candidate'
+        candidate.mkdir()
+        progress = self.progress()
+        progress.update(candidate=str(candidate), baseline=False, development_issue={'id': 'development'})
+        write(self.workdir / '.aide-client.json', progress)
+        with patch('multica_aide.campaign.development_helper', return_value=self.root / 'absent'):
+            self.assertEqual(self.run_sop()['data']['route'], 'idea')
+            self.assertEqual(self.run_sop('enter')['status'], 'idea')
+        self.develop.assert_not_called()
+
     def test_missing_contract_blocks_and_notifies_parent_at_initialization(self):
         self.contract.unlink()
         self.assertEqual(self.run_sop()['data']['route'], 'needs_setup')

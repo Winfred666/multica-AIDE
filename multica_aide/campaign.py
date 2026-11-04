@@ -69,7 +69,7 @@ def observe(context):
             route = ('test' if repository else 'idea') if progress['session_id'] == 'client-1' else 'waiting'
         else:
             route = 'idea'
-        if route == 'idea' and not development_helper().is_file():
+        if route == 'idea' and not progress.get('development_issue') and not development_helper().is_file():
             data['failures'].append('native development workdir helper')
         data.update(route=route, tree=tree, node=complete, workdir=str(workdir), config=config, progress=progress)
     except (FileNotFoundError, KeyError, ValueError, TypeError, StopIteration, ImportError, SyntaxError) as error:

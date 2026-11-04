@@ -249,8 +249,8 @@ def begin(config, max_rounds=0):
             if max_rounds and progress['completed'] >= max_rounds:
                 continue
             if client['session_id'] not in started and (baseline_ready or client == saved['clients'][0]):
-                entry = SKILLS / 'multica-aide-cli' / 'wrapper.py'
-                wake(api, client, 'Use multica-aide-cli: ' + shlex.join([sys.executable, str(entry)]))
+                entry = '.pi/skills/multica-aide-cli/wrapper.py'
+                wake(api, client, 'Run in this issue\'s workdir: ' + shlex.join([sys.executable, entry]))
                 started.add(client['session_id'])
         if max_rounds and all(read(Path(c['workdir']) / '.aide-client.json')['completed'] >= max_rounds for c in saved['clients']):
             return {'status': 'round_limit', 'nodes': nodes}
