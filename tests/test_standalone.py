@@ -59,7 +59,8 @@ class ClientSOP(unittest.TestCase):
 
     def cli(self, *words):
         self.calls.append(words)
-        if words[0] == 'get': return self.issue
+        if words[0] == 'get':
+            return {'id': 'parent', 'assignee_id': 'installer'} if words[1] == 'parent' else self.issue
         if words[0] == 'status': self.issue['status'] = words[2]; return self.issue
         if words[:2] == ('comment', 'add'): return {'id': 'comment'}
         raise AssertionError(words)
@@ -159,6 +160,7 @@ class ClientSOP(unittest.TestCase):
         self.assertEqual(self.run_sop('enter')['status'], 'needs_setup')
         self.assertEqual(self.issue['status'], 'blocked')
         notification = next(c for c in self.calls if c[:3] == ('comment', 'add', 'parent'))
+        self.assertIn('mention://agent/installer', notification[-1])
         self.assertIn('check is failed, failed to enter init state', notification[-1])
 
 

@@ -86,7 +86,9 @@ def block_setup(args, context):
     message = '; '.join(observation['failures']) + ' check is failed, failed to enter init state.'
     context['cli']('status', issue['id'], 'blocked', '--no-start', write=True)
     if issue.get('parent_issue_id'):
-        context['cli']('comment', 'add', issue['parent_issue_id'], '--content', message, write=True)
+        parent = context['cli']('get', issue['parent_issue_id'])
+        notification = '[@Installer](mention://agent/' + parent['assignee_id'] + ') ' + message
+        context['cli']('comment', 'add', parent['id'], '--content', notification, write=True)
     return {'instruction': message, 'data': {'failed_checks': observation['failures']}}
 
 
