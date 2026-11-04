@@ -10,6 +10,8 @@ Use the configured benchmark project and prepared runtime.
 1. Start from the requested benchmark name. Locate its official task and scoring
    contract, reuse downloaded data and the available Python environment, and
    prepare one benchmark project with a runnable baseline solution repository.
+   Bind its repository, public-data and environment resources to this prepared
+   benchmark.
    For MLE-bench or AutoExam, use the benchmark's official preparation, split,
    submission format and evaluator. Record the source links in the project.
 2. Keep public development inputs available to workers. Put hidden examples,
@@ -28,7 +30,9 @@ Use the configured benchmark project and prepared runtime.
    wrapper around individual SOP commands does not establish this isolation.
 4. Copy `config.yaml` to ignored `config.local.yaml`. Fill in the project, runtime,
    model IDs, baseline repository, public data, private paths and evaluator argv.
-   Use provider-qualified model IDs when required. Preview the resolved settings:
+   Read the selected runtime's model inventory and use its exact IDs for
+   `solver_model` and `cli_babysitter_model`; resolve the requested defaults before
+   creating clients. Preview the resolved settings:
 
    ```sh
    python3 run.py --config config.local.yaml install
