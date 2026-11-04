@@ -242,7 +242,7 @@ def install(config, parent_issue, confirm=False):
         row['issue_id'] = issue['id']
         write(state_file, saved)
         api.request('POST', '/api/issues/' + issue['id'] + '/labels', {'label_id': query})
-        metadata(api, issue['id'], {'sandbox_profile': config['sandbox']['profile'], 'sandbox_policy': policy(config),
+        metadata(api, issue['id'], {'sandbox_policy': policy(config),
                                     'aide_runtime_id': config['multica']['runtime_id']})
         api.request('PUT', '/api/issues/' + issue['id'], {'assignee_type': 'agent', 'assignee_id': agent['id'], 'suppress_run': True})
     saved['status'] = 'installed'
@@ -461,7 +461,7 @@ def create_dev(agent_id, title, description_file):
     parent = api.request('GET', '/api/issues/' + parent_id)
     inherited = parent.get('metadata') or {}
     workdir = inherited['query_workdir']
-    if not inherited.get('sandbox_policy') or not inherited.get('sandbox_profile'):
+    if not inherited.get('sandbox_policy') or not inherited.get('aide_runtime_id'):
         raise ValueError('optimization client is missing its sandbox policy')
     agent = api.request('GET', '/api/agents/' + agent_id)
     if agent['runtime_id'] != inherited['aide_runtime_id']:
@@ -470,8 +470,8 @@ def create_dev(agent_id, title, description_file):
     issue = api.request('POST', '/api/issues', {'title': title, 'description': description,
         'project_id': parent['project_id'], 'parent_issue_id': parent_id, 'status': 'backlog'})
     api.request('POST', '/api/issues/' + issue['id'] + '/labels', {'label_id': label(api, 'dev')})
-    metadata(api, issue['id'], {'sandbox_profile': inherited['sandbox_profile'],
-        'sandbox_policy': inherited['sandbox_policy'], 'aide_runtime_id': inherited['aide_runtime_id'], 'git_repo_root': workdir,
+    metadata(api, issue['id'], {'sandbox_policy': inherited['sandbox_policy'],
+        'aide_runtime_id': inherited['aide_runtime_id'], 'git_repo_root': workdir,
         'git_workdir': workdir, 'git_branch': 'main', 'git_owner_issue_id': issue['id']})
     api.request('PUT', '/api/issues/' + issue['id'], {'assignee_type': 'agent', 'assignee_id': agent_id, 'status': 'in_progress'})
     return {'issue_id': issue['id'], 'workdir': workdir}
