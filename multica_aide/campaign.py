@@ -273,7 +273,7 @@ def require_development(progress):
     if development:
         child = API().request('GET', '/api/issues/' + development['id'])
         if child.get('status_category', child['status']) != 'done':
-            raise ValueError('Complete native review and acceptance of development issue ' + development['id'] + ' before testing or scoring.')
+            raise ValueError('Development issue ' + development['id'] + ' is not done; follow the native review SOP.')
 
 
 def monitor_test(args, context):

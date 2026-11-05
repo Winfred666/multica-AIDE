@@ -288,13 +288,12 @@ def transition(args, context, controller):
         context.pop('cli', None)
         context.pop('error', None)
     if result['phase'] == workflow.initial:
-        count = len(result.get('alternatives', [])) + bool(result.get('callback'))
-        result['instruction'] += f'\n{count + 1}. `quit`: Stop this SOP.'
         result.setdefault('alternatives', []).append({'instruction': 'Stop this SOP.', 'callback': ['quit']})
     next_phase = result.pop('phase')
     result.setdefault('accepted', True)
     status = next_phase if result['accepted'] or receipt else before
     result['next_step'] = callback(result.pop('instruction'), result.pop('callback', None))
+    result['next_step']['option_instruction'] = result.pop('callback_instruction', None)
     alternatives = result.pop('alternatives', [])
     if alternatives:
         result['next_step']['alternatives'] = [callback(choice['instruction'], choice['callback'])
@@ -427,7 +426,16 @@ def exception_result(error, context):
 
 def response(result):
     """Agent guidance; diagnostics remain in the saved incident."""
-    output = {'status': result['status'], **result['next_step']}
+    step = result['next_step']
+    instruction = step['instruction']
+    if result['status'] is not None:
+        instruction = f'You are in SOP state "{result["status"]}". {instruction}'
+    options = []
+    if step.get('command'):
+        options.append({'instruction': step.get('option_instruction') or step['instruction'],
+                        'command': step['command']})
+    options.extend(step.get('alternatives', []))
+    output = {'status': result['status'], 'instruction': instruction, 'next_step': options}
     if result.get('error'):
         output['error'] = {key: result['error'][key] for key in ('code', 'message')}
     for key in ('data', 'evidence', 'usage'):
