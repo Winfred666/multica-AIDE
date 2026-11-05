@@ -62,13 +62,14 @@ function draw() {
     const value=Math.max(0,...parents(byId.get(id)).filter(p=>byId.has(p)).map(p=>depth(p,next)+1)); depths.set(id,value); return value;
   }
   const levels=new Map(); nodes.forEach(n=>{ const d=depth(n.id); if(!levels.has(d))levels.set(d,[]); levels.get(d).push(n) });
-  const width=Math.max(1,...Array.from(levels.values(),rows=>rows.length))*290, height=(Math.max(0,...levels.keys())+1)*200;
+  const nodeHeight=Math.max(115,...nodes.map(n=>115+(display(n).labels||[]).length*14)), rowHeight=nodeHeight+55;
+  const width=Math.max(1,...Array.from(levels.values(),rows=>rows.length))*290, height=(Math.max(0,...levels.keys())+1)*rowHeight;
   svg.setAttribute('width',width); svg.setAttribute('height',height); svg.setAttribute('viewBox',`0 0 ${width} ${height}`);
-  const positions=new Map(); levels.forEach((rows,d)=>rows.forEach((n,i)=>positions.set(n.id,{x:(width-rows.length*290)/2+i*290+15,y:d*200+15})));
-  nodes.forEach(n=>{ const to=positions.get(n.id); parents(n).forEach(id=>{ const from=positions.get(id); if(from)element('path',{class:'edge',d:`M${from.x+130},${from.y+145} C${from.x+130},${from.y+170} ${to.x+130},${to.y-25} ${to.x+130},${to.y}`}) }) });
+  const positions=new Map(); levels.forEach((rows,d)=>rows.forEach((n,i)=>positions.set(n.id,{x:(width-rows.length*290)/2+i*290+15,y:d*rowHeight+15})));
+  nodes.forEach(n=>{ const to=positions.get(n.id); parents(n).forEach(id=>{ const from=positions.get(id); if(from)element('path',{class:'edge',d:`M${from.x+130},${from.y+nodeHeight} C${from.x+130},${from.y+nodeHeight+25} ${to.x+130},${to.y-25} ${to.x+130},${to.y}`}) }) });
   nodes.forEach(n=>{
     const p=positions.get(n.id), group=element('g',{class:'node',transform:`translate(${p.x},${p.y})`,tabindex:0,role:'button','aria-label':`${n.title}, ${scoreText(n)}`}); group.dataset.id=n.id;
-    element('rect',{width:260,height:145,rx:9},group);
+    element('rect',{width:260,height:nodeHeight,rx:9},group);
     const title=element('text',{x:12,y:25},group); title.textContent=n.title.length>27?n.title.slice(0,26)+'…':n.title;
     const full=element('title',{},group); full.textContent=n.title;
     element('text',{x:12,y:52,class:'metric'},group).textContent=scoreText(n);
