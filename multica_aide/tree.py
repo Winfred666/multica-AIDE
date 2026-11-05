@@ -84,9 +84,11 @@ class SearchTree:
         with self._state() as state:
             return state
 
-    def register_baseline(self, id, title, description, score, artifact=None, review=None):
+    def register_baseline(self, id, title, description, score, artifact=None, review=None, metadata=None):
         node = _node(id, title, description, _score(self.score_function(score)), delivery=score, artifact=artifact, review=review,
                      parent_id=None, kind="baseline", session_id=None, round_id=None)
+        if metadata is not None:
+            node['metadata'] = metadata
         with self._state() as state:
             existing = next((n for n in state["nodes"] if n["id"] == id), None)
             if state["baseline_id"] is not None or existing:
@@ -101,10 +103,12 @@ class SearchTree:
             self._save(state)
         return node
 
-    def register_baseline_description(self, id, title, description, *, session_id, artifact=None):
+    def register_baseline_description(self, id, title, description, *, session_id, artifact=None, metadata=None):
         """Register the untested root before its first measurement."""
         node = _node(id, title, description, artifact=artifact, review=None, parent_id=None,
                      kind='baseline', session_id=session_id, round_id=None)
+        if metadata is not None:
+            node['metadata'] = metadata
         with self._state() as state:
             if state['baseline_id'] is not None:
                 existing = next(n for n in state['nodes'] if n['id'] == state['baseline_id'])

@@ -1,23 +1,26 @@
 # Copy to config.local.yaml; follow AGENTS.md and reuse confirmed settings.
-name: null # Distinguish multiple native installations under the same parent issue.
 drafts: 5
 clients: 2
 port: 3003 # null disables the loop's background HTML server.
 knowledge_base: null
-solver_model: gpt-6.1-terra
-cli_babysitter_model: gpt-6-luna
+mode: val_dev # Default: one issue develops and validates. Use separate for private validation.
+AIDE_val_dev: Improvement iteration # Exact existing agent name for the default mode.
+AIDE_solution_validator: null # Required in separate mode; owns the CLI SOP and locked evaluator.
+AIDE_solution_developer: null # Required in separate mode; reused in one sandboxed child per client.
+agent_defaults: # Used only when creating the named agent; existing settings stay unchanged.
+  model: gpt-6.1-terra
+  thinking_level: high
+  max_concurrent_tasks: 4
 maximize: true
 tree: .aide/tree
 state: .aide/controller
-workdirs: .aide/workdirs
+template: .aide/template # Prepared benchmark repository/feature branch, with AGENTS.md or AGENTS.d.
+workdirs: .aide/workdirs # Client and solution worktrees, outside the template repository.
 poll_seconds: 10
 multica:
-  project_id: REPLACE_WITH_BENCHMARK_PROJECT_ID
   runtime_id: null # Inherit the installing agent's native runtime.
-  thinking_level: high
 benchmark:
   description: REPLACE_WITH_THE_BENCHMARK_TASK_AND_SUBMISSION_CONTRACT
-  repository: null # A provided baseline repository, or null for an empty idea.
   public_data: /absolute/path/to/public-data
   contract: /absolute/path/to/benchmark-contract.py # validate, score, is_complete
   private_paths: # Official grading resources outside solution repositories.

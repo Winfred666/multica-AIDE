@@ -4,7 +4,6 @@ import json
 import os
 from pathlib import Path
 import shlex
-import shutil
 import subprocess
 import sys
 import time
@@ -14,11 +13,11 @@ from urllib.request import Request, urlopen
 import yaml
 
 from . import SearchTree
+from .worktrees import add_worktree, git, hidden_paths, prepare_template, sandbox
 
 ROOT = Path(__file__).resolve().parent.parent
 LAUNCHER = Path(__file__).with_name('__main__.py')
 SKILLS = Path(__file__).with_name('skills')
-CLIENT_PROTOCOL = 'Use multica-aide-cli for this issue. Follow its returned option until the SOP finishes.'
 
 
 def read(path):
@@ -57,16 +56,25 @@ def load_config(path):
     for key in ('drafts', 'clients'):
         if type(config.get(key)) is not int or config[key] < 1:
             raise ValueError(key + ' must be a positive integer')
-    config.setdefault('solver_model', 'gpt-6.1-terra')
-    config.setdefault('cli_babysitter_model', 'gpt-6-luna')
+    config.setdefault('agent_defaults', {})
+    config.setdefault('mode', 'val_dev')
+    if config['mode'] not in {'val_dev', 'separate'}:
+        raise ValueError('mode must be val_dev or separate')
+    roles = ('AIDE_val_dev',) if config['mode'] == 'val_dev' else ('AIDE_solution_validator', 'AIDE_solution_developer')
+    for role in roles:
+        if not isinstance(config.get(role), str) or not config[role].strip():
+            raise ValueError(role + ' must name an agent')
     if config.get('port') is not None and (type(config['port']) is not int or not 0 < config['port'] < 65536):
         raise ValueError('port must be null or a TCP port')
-    for field in ('tree', 'state', 'workdirs'):
+    config.setdefault('template', '.aide/template')
+    for field in ('tree', 'state', 'workdirs', 'template'):
         config[field] = str((path.parent / config[field]).resolve())
+    if Path(config['workdirs']).is_relative_to(config['template']):
+        raise ValueError('workdirs must be outside the prepared template repository')
     if config.get('knowledge_base'):
         config['knowledge_base'] = str((path.parent / config['knowledge_base']).resolve())
     bench = config['benchmark']
-    for field in ('repository', 'public_data', 'contract'):
+    for field in ('public_data', 'contract'):
         if bench.get(field):
             bench[field] = str((path.parent / bench[field]).resolve())
     bench['private_paths'] = [str((path.parent / p).resolve()) for p in bench.get('private_paths', [])]
@@ -101,22 +109,6 @@ def evaluate(config, solution):
     return json.loads(result.stdout)
 
 
-def snapshot(source, destination):
-    shutil.copytree(source, destination, ignore=shutil.ignore_patterns('.git', '.pi', '.multica'))
-    return str(destination)
-
-
-def checkout(source, destination):
-    if source:
-        snapshot(source, destination)
-    else:
-        Path(destination).mkdir(parents=True)
-    for argv in (['git', 'init', '-q', '-b', 'main'], ['git', 'add', '.'],
-                 ['git', '-c', 'user.name=Multica', '-c', 'user.email=multica@localhost',
-                  'commit', '-q', '--allow-empty', '-m', 'Benchmark solution']):
-        subprocess.run(argv, cwd=destination, check=True, capture_output=True)
-
-
 def label(api, name):
     labels = api.request('GET', '/api/labels?resource_type=issue')['labels']
     row = next((row for row in labels if row['name'] == name), None)
@@ -128,21 +120,27 @@ def metadata(api, issue, values):
         api.request('PUT', '/api/issues/' + issue + '/metadata/' + key, {'value': value})
 
 
-def cli_skill(api):
-    folder = SKILLS / 'multica-aide-cli'
-    body = {'name': folder.name, 'description': CLIENT_PROTOCOL,
-            'content': (folder / 'SKILL.md').read_text(), 'config': {},
-            'files': [{'path': f.name, 'content': f.read_text()} for f in sorted(folder.iterdir())
-                      if f.is_file() and f.name != 'SKILL.md']}
-    rows = api.request('GET', '/api/skills')
-    rows = rows if isinstance(rows, list) else rows['skills']
-    existing = next((row for row in rows if row['name'] == folder.name), None)
-    return api.request('PUT' if existing else 'POST', '/api/skills' + ('/' + existing['id'] if existing else ''), body)['id']
+def configured_agent(api, name, runtime_id, defaults):
+    """Reuse the configured workspace agent without changing its settings."""
+    matches = [a for a in api.request('GET', '/api/agents?include_archived=true') if a['name'] == name]
+    if len(matches) > 1:
+        raise ValueError('Multiple agents named ' + name + '; select a unique agent name')
+    if matches:
+        agent = matches[0]
+        if agent.get('archived_at'):
+            api.request('POST', '/api/agents/' + agent['id'] + '/restore', {})
+        return agent
+    print(f'WARNING: Agent {name!r} does not exist. Installation will create this shared workspace agent '
+          'using agent_defaults.', file=sys.stderr, flush=True)
+    return api.request('POST', '/api/agents', {
+        **defaults, 'name': name, 'runtime_id': runtime_id, 'visibility': 'workspace',
+        'description': 'Iterates on assigned improvement tasks.',
+        'instructions': 'Follow the procedure supplied by the assigned issue.'})
 
 
 def install(config, parent_issue, confirm=False):
     """Called by the installer SOP after benchmark preparation and confirmation."""
-    paths = [config['benchmark'].get(k) for k in ('repository', 'public_data', 'contract')]
+    paths = [config['benchmark'].get(k) for k in ('public_data', 'contract')]
     paths += config['benchmark']['private_paths']
     if config.get('knowledge_base'):
         paths.append(config['knowledge_base'])
@@ -154,6 +152,15 @@ def install(config, parent_issue, confirm=False):
         return {'status': 'preparation_required', 'missing_paths': missing,
                 'instruction': 'Prepare the benchmark resources and its validate, score and is_complete functions.'}
     contract(config)
+    if config['mode'] == 'separate':
+        if not config['benchmark']['private_paths']:
+            raise ValueError('Separate validation requires benchmark.private_paths, including the locked evaluator')
+        if any(Path(p).is_relative_to(config['template']) or Path(config['template']).is_relative_to(p)
+               or Path(p).is_relative_to(config['workdirs']) or Path(config['workdirs']).is_relative_to(p)
+               for p in config['benchmark']['private_paths']):
+            raise ValueError('Private validation resources must be outside template and solution worktrees')
+        subprocess.run(sandbox({'deny_paths': config['benchmark']['private_paths']}, Path.cwd(), ['/usr/bin/true']),
+                       check=True, capture_output=True)
     if not confirm:
         return {'status': 'ready', 'config': config}
     state_file = Path(config['state']) / 'installation.json'
@@ -161,49 +168,70 @@ def install(config, parent_issue, confirm=False):
         saved = read(state_file)
         if saved['config'] != config or saved['parent_issue_id'] != parent_issue:
             raise ValueError('installation settings changed; preserve the installed state')
+        if saved['status'] != 'installed':
+            raise ValueError('Installation is incomplete; reconcile its saved issues before continuing')
         return saved
-    benchmark = config['benchmark']
-    if benchmark.get('baseline_delivery') is not None:
-        artifact = Path(config['state']) / 'artifacts' / 'baseline'
-        if not artifact.exists():
-            snapshot(benchmark['repository'], artifact)
-        search(config).register_baseline('baseline', 'Initial baseline',
-            benchmark.get('baseline_description', benchmark['description']), benchmark['baseline_delivery'],
-            artifact=str(artifact), review=benchmark.get('baseline_review'))
+    template_commit = prepare_template(config, SKILLS)
     api = API()
     parent = api.request('GET', '/api/issues/' + parent_issue)
     runtime_id = config['multica'].get('runtime_id') or api.request('GET', '/api/agents/' + parent['assignee_id'])['runtime_id']
-    skill_id = cli_skill(api)
-    suffix = ' #' + str(parent['number'])
-    if config.get('name'):
-        suffix += ' / ' + config['name']
-    solver = api.request('POST', '/api/agents', {'name': 'Solution developer' + suffix,
-        'description': 'Benchmark solver for issue ' + parent_issue, 'runtime_id': runtime_id,
-        'model': config['solver_model'], 'thinking_level': config['multica'].get('thinking_level', 'high'),
-        'visibility': 'workspace', 'max_concurrent_tasks': config['clients']})
+    role = 'AIDE_val_dev' if config['mode'] == 'val_dev' else 'AIDE_solution_validator'
+    agent = configured_agent(api, config[role], runtime_id, config['agent_defaults'])
+    developer = (configured_agent(api, config['AIDE_solution_developer'], runtime_id, config['agent_defaults'])
+                 if config['mode'] == 'separate' else None)
     saved = {'status': 'installing', 'config': config, 'workspace_id': api.workspace, 'server_url': api.base,
-             'parent_issue_id': parent_issue, 'solver_id': solver['id'], 'skill_id': skill_id, 'clients': []}
+             'parent_issue_id': parent_issue, 'template_commit': template_commit, 'clients': []}
     write(state_file, saved)
+    repository = Path(config['template'])
+    Path(config['workdirs']).mkdir(parents=True, exist_ok=True)
+    base = git(repository, 'branch', '--show-current')
     for index in range(config['clients']):
         session = 'client-' + str(index + 1)
         workdir = Path(config['workdirs']) / session
-        workdir.mkdir(parents=True, exist_ok=True)
-        agent = api.request('POST', '/api/agents', {'name': 'Improvement client ' + str(index + 1) + suffix,
-            'description': 'Optimization client for issue ' + parent_issue, 'runtime_id': runtime_id,
-            'model': config['cli_babysitter_model'], 'instructions': CLIENT_PROTOCOL,
-            'thinking_level': 'low', 'visibility': 'workspace', 'max_concurrent_tasks': 1})
-        api.request('POST', '/api/agents/' + agent['id'] + '/skills/add', {'skill_ids': [skill_id]})
         issue = api.request('POST', '/api/issues', {'title': 'Improvement client ' + str(index + 1),
-            'description': 'Follow multica-aide-cli until its exit condition is met.',
-            'project_id': config['multica']['project_id'], 'parent_issue_id': parent_issue, 'status': 'backlog'})
-        api.request('POST', '/api/issues/' + issue['id'] + '/labels', {'label_id': label(api, 'query')})
-        metadata(api, issue['id'], {'query_workdir': str(workdir), 'aide_checkout': str(ROOT),
-                                   'aide_config': config['config_path'], 'aide_runtime_id': runtime_id})
-        write(workdir / '.aide-client.json', {'config_path': config['config_path'], 'session_id': session,
-            'completed': 0, 'candidate': None, 'node_id': None, 'finished': False})
+            'description': f'Run python3 {workdir}/.agents/skills/multica-aide-cli/wrapper.py until it finishes.',
+            'project_id': parent.get('project_id'), 'parent_issue_id': parent_issue, 'status': 'backlog'})
+        branch = 'aide-' + issue['id']
+        add_worktree(config, workdir, branch, template_commit)
+        api.request('POST', '/api/issues/' + issue['id'] + '/labels', {'label_id': label(api, 'dev')})
+        metadata(api, issue['id'], {'query_workdir': str(workdir), 'aide_client_workdir': str(workdir), 'aide_checkout': str(ROOT),
+                                   'git_repo_root': str(repository), 'git_workdir': str(workdir),
+                                   'git_branch': branch, 'git_base_branch': base, 'git_owner_issue_id': issue['id']})
+        progress = {'config_path': config['config_path'], 'session_id': session,
+                    'completed': 0, 'candidate': None, 'node_id': None, 'finished': False,
+                    'template_commit': template_commit}
+        if developer:
+            candidate = Path(config['workdirs']) / ('development-' + str(index + 1))
+            add_worktree(config, candidate, branch + '-development', template_commit)
+            child = api.request('POST', '/api/issues', {'title': 'Develop solutions for client ' + str(index + 1),
+                'description': 'Develop only the public task supplied by the validator. Run every development command through '
+                    + shlex.join([sys.executable, str(LAUNCHER), 'develop', '--workdir', str(workdir), '--'])
+                    + ' COMMAND. Leave Git commits and evaluation to the validator. Deliver the changed files '
+                    'and mark this issue in_review; await its next iteration.',
+                'project_id': parent.get('project_id'), 'parent_issue_id': issue['id'], 'status': 'backlog'})
+            api.request('POST', '/api/issues/' + child['id'] + '/labels', {'label_id': label(api, 'dev')})
+            policy = {'deny_paths': hidden_paths([*config['benchmark']['private_paths'], config['benchmark']['contract'],
+                       config['config_path'], config['state'], config['tree']])}
+            metadata(api, child['id'], {'sandbox_policy': json.dumps(policy), 'query_workdir': str(candidate),
+                'git_repo_root': str(repository), 'git_workdir': str(candidate), 'git_branch': branch + '-development',
+                'git_base_branch': branch, 'git_owner_issue_id': child['id']})
+            api.request('PUT', '/api/issues/' + child['id'],
+                        {'assignee_type': 'agent', 'assignee_id': developer['id'], 'suppress_run': True})
+            progress.update(developer_issue_id=child['id'], developer_agent_id=developer['id'],
+                            sandbox_policy=policy, initial_candidate=str(candidate))
+            write(workdir / '.aide-development.json', {'candidate': str(candidate), 'policy': policy})
+        write(workdir / '.aide-client.json', progress)
         api.request('PUT', '/api/issues/' + issue['id'], {'assignee_type': 'agent', 'assignee_id': agent['id'], 'suppress_run': True})
         saved['clients'].append({'session_id': session, 'agent_id': agent['id'], 'issue_id': issue['id'], 'workdir': str(workdir)})
         write(state_file, saved)
+    benchmark = config['benchmark']
+    if benchmark.get('baseline_delivery') is not None:
+        artifact = Path(config['workdirs']) / 'baseline'
+        add_worktree(config, artifact, 'aide-baseline', template_commit)
+        search(config).register_baseline('baseline', 'Initial baseline',
+            benchmark.get('baseline_description', benchmark['description']), benchmark['baseline_delivery'],
+            artifact=str(artifact), review=benchmark.get('baseline_review'),
+            metadata={'git_commit': template_commit, 'git_branch': 'aide-baseline'})
     saved['status'] = 'installed'
     write(state_file, saved)
     return saved
@@ -223,6 +251,11 @@ def completed_node(config):
     return None
 
 
+def development_running(tasks):
+    return any(t['status'] in {'pending', 'queued', 'dispatched', 'running', 'cancelling', 'deferred', 'waiting_local_directory'}
+               or (t.get('result') or {}).get('process_cleanup_pending') for t in tasks)
+
+
 def begin(config, max_rounds=0):
     """Host the board and supervise normal SOP completion; Multica owns failures."""
     state_file = Path(config['state']) / 'installation.json'
@@ -237,6 +270,7 @@ def begin(config, max_rounds=0):
     saved['controller_pid'] = os.getpid()
     write(state_file, saved)
     started = set()
+    delivered = set()
     observed = None
     while True:
         node = completed_node(config)
@@ -255,11 +289,19 @@ def begin(config, max_rounds=0):
             progress = read(Path(client['workdir']) / '.aide-client.json')
             if max_rounds and progress['completed'] >= max_rounds:
                 continue
-            if client['session_id'] not in started and (baseline_ready or client == saved['clients'][0]):
-                entry = '.pi/skills/multica-aide-cli/wrapper.py'
+            entry = str(Path(client['workdir']) / '.agents/skills/multica-aide-cli/wrapper.py')
+            if (client['session_id'] not in started and not progress.get('development_pending')
+                    and (baseline_ready or client == saved['clients'][0])):
                 wake(api, client, 'Run in this issue\'s workdir: ' + shlex.join([sys.executable, entry]))
                 started.add(client['session_id'])
                 print('Started ' + client['session_id'] + ': ' + client['issue_id'], file=sys.stderr, flush=True)
+            if progress.get('development_pending') and progress['candidate'] not in delivered:
+                child = '/api/issues/' + progress['developer_issue_id']
+                delivery = api.request('GET', child)
+                if delivery['status'] in {'in_review', 'done'} and not development_running(api.request('GET', child + '/task-runs')):
+                    wake(api, client, 'Developer delivery is ready. Resume ' + shlex.join([sys.executable, entry]))
+                    delivered.add(progress['candidate'])
+                    started.add(client['session_id'])
         if max_rounds and all(read(Path(c['workdir']) / '.aide-client.json')['completed'] >= max_rounds for c in saved['clients']):
             return {'status': 'round_limit', 'nodes': nodes}
         time.sleep(config.get('poll_seconds', 10))

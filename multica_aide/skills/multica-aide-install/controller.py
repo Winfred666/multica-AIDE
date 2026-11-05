@@ -16,7 +16,7 @@ workflow = Workflow(
               Option('prepare', 'confirm', 'Validate the prepared benchmark and display configuration.', campaign.prepare_install,
                      params=(Parameter('--settings', 'Path to config.local.yaml', type=Path),)),
           )),
-    State('confirm', 'Confirm D, N, models, port, knowledge base and benchmark settings; reuse answers already given.',
+    State('confirm', 'Confirm D, N, mode, named agents, template branch, port and benchmark. Select separate mode explicitly when the validation set must stay private; otherwise use val_dev. Reuse answers already given.',
           view=settings, options=(Option('install', 'installed', 'Install the confirmed configuration.', campaign.confirm_install),)),
     State('installed', 'The native clients are prepared. Start their SOP loop and HTML board.',
           options=(Option('start', 'running', 'Run the campaign in this task until it completes or needs setup.', campaign.start_install),)),

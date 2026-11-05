@@ -2,44 +2,60 @@
 
 ```mermaid
 flowchart TD
-    init[Initialize] --> checks{Integrity and existing deliveries}
-    checks -->|missing requirement| blocked[Block and notify parent]
-    checks -->|exit condition met| done[Finished with existing node]
-    checks -->|no baseline| idea[Idea: empty candidate]
-    checks -->|untested baseline| test[Test]
-    checks -->|measured root| idea
+    initialize --> checks{Integrity and saved progress}
+    checks -->|missing requirement: notify parent| needs_setup
+    checks -->|exit met| finished
+    checks -->|another client must establish root| waiting
+    waiting -->|check| initialize
+    checks -->|draft or refine| idea
+    checks -->|baseline or pending test| test
+    checks -->|test already ended| review
+    checks -->|round already scored| tested
     idea -->|test: one description paragraph| test
-    test --> ended{Test exited?}
-    ended -->|no: important log or time checkpoint| decision[Choose continue or exception]
-    decision -->|continue| test
-    decision -->|exception: end test| review
-    ended -->|yes: success or error| review
-    review -->|record: JSON delivery and one review paragraph| measured[Scored node]
-    review -->|record: no scorable delivery| failed[Native block with review and logs]
-    measured --> exit{Exit condition}
-    exit -->|true| done
-    exit -->|false| idea
+    idea -->|separate: develop| developing
+    developing -->|continue: delivery and cleanup pending| developing
+    developing -->|continue: validated delivery format| test
+    test -->|continue: running| test
+    test -->|ended or exception| review
+    review -->|record: JSON and review paragraph| tested
+    review -->|record: no scorable delivery| test_failed
+    tested -->|continue| exit{Exit met?}
+    exit -->|yes| finished
+    exit -->|no| idea
 ```
 
-The diamonds are scripted decisions. Test escalation supplies continue and exception.
-Idea entry hands the candidate to the configured solver in a dev child, using the
-workspace's existing native workdir helper. Native Multica owns its review and
-acceptance.
-The benchmark contract defines `validate(solution)`, `score(delivery)` and
-`is_complete(delivery)`. The full JSON delivery is retained on the node; its numeric
-projection selects future parents. Proposal and score registration record the
-put-forward time and test duration. Initialization failure marks the client blocked
-and sends the failed check to its parent. The official test runs in the background;
-the monitor stays in the foreground and returns newly appended log excerpts.
-The task's JSON record keeps its log offsets and 7.5/15/30/60-minute checkpoint
-index; further checkpoints are hourly. Native child development follows its
-ordinary delivery/block flow.
+The benchmark supplies `validate(solution)`, `score(delivery)` and
+`is_complete(delivery)`. Nodes retain the full delivery, put-forward time and test
+duration; the numeric score ranks parents. Each node retains one worktree and its
+Git commit. Drafts branch from the prepared template, refinements from the selected
+node's commit. Separate mode reuses the developer child created at installation.
+
+State: `test`
 
 ```mermaid
-flowchart LR
-    native[Native task] --> state[Task SOP state]
-    state --> facts[Client checkpoint and shared tree]
-    facts --> contract[Benchmark functions]
-    contract --> option[Explicit recall]
-    option --> save[Save node and return next state]
+flowchart TD
+    enter[Test keeps running and logging in background] --> ended{Process ended?}
+    ended -->|yes: success or error| result[Save exit and any scorable JSON]
+    result --> review["Next: review"]
+    ended -->|no| trigger{New WARNING/ERROR or checkpoint?}
+    trigger -->|no| ended
+    trigger -->|yes| progress[Return new log excerpt and paths; save cursor in task JSON]
+    progress --> recall{Recall in same turn}
+    recall -->|continue| ended
+    recall -->|exception| stop[Stop experiment process group]
+    stop --> result
+    checkpoints["7.5 / 15 / 30 / 60 min, then hourly"] -.-> trigger
+```
+
+State: `review`
+
+```mermaid
+flowchart TD
+    record["record: one review paragraph"] --> delivery{Scorable recorded delivery?}
+    delivery -->|no| failure[Save review and logs; leave node unscored]
+    failure --> blocked["Next: test_failed; report native block"]
+    delivery -->|yes| match{Submitted JSON equals recorded JSON?}
+    match -->|no| stay["Stay: review; correct delivery"]
+    match -->|yes| score[Verify tested commit; save score and review]
+    score --> tested["Next: tested"]
 ```

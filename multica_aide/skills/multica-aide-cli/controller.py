@@ -24,7 +24,7 @@ def entry(context):
 def phase_check(context):
     issue, workdir, progress, config = campaign.client(context)
     phase = context.get('result', {}).get('phase', context['phase'])
-    if phase in {'idea', 'test', 'review', 'tested'} and not Path(progress['candidate']).is_dir():
+    if phase in {'idea', 'developing', 'test', 'review', 'tested'} and not Path(progress['candidate']).is_dir():
         raise AssertionError('Candidate directory is missing.')
     if phase in {'test', 'review', 'tested'}:
         nodes = campaign.search(config).snapshot()['nodes']
@@ -55,15 +55,24 @@ def review_options(context):
                        Parameter('--review', 'One paragraph reviewing the measured result'))),)
 
 
+def idea_options(context):
+    issue, workdir, progress, config = campaign.client(context)
+    separate = config['mode'] == 'separate'
+    return (Option('develop' if separate else 'test', 'developing' if separate else 'test',
+                   'Describe the idea and dispatch the existing developer.' if separate else 'Describe this solution idea and start its test.',
+                   campaign.delegate if separate else campaign.describe,
+                   params=(Parameter('--description', 'One paragraph describing this solution idea'),)),)
+
+
 workflow = Workflow(
     State('initialize', 'Check the benchmark, baseline, solution tree and delivery exit condition.',
           initial=True, precheck=initialize, options=entry,
           view=lambda context: {'data': context['initial']}),
-    State('idea', 'Sub-issues automatically steer you when ready for review. Follow the review SOP to resolve all sub-issues.',
+    State('idea', 'Use the configured mode: improve this worktree directly, or dispatch its installed developer child.',
+          precheck=phase_check, view=campaign.candidate_view, options=idea_options),
+    State('developing', 'Review the developer delivery, then run locked validation in this issue.',
           precheck=phase_check, view=campaign.candidate_view, options=(
-              Option('test', 'test', 'Describe this solution idea in one paragraph and start its test.', campaign.describe,
-                     params=(Parameter('--description', 'One paragraph describing this solution idea'),)),
-          )),
+              Option('continue', 'developing', 'Check developer delivery and begin validation when ready.', campaign.development),)),
     State('test', 'Read the collected test progress. Choose and invoke continue or exception in this turn.',
           precheck=phase_check, view=campaign.test_view, options=(
               Option('continue', 'test', 'Monitor until an important log, time checkpoint or test exit.', campaign.monitor_test),

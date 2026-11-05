@@ -9,12 +9,13 @@ if not __package__:
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
     __package__ = 'multica_aide'
 
-from .standalone import SKILLS, begin, load_config, search
+from .standalone import SKILLS, begin, load_config, read, search
+from .worktrees import sandbox
 from .viewer import serve
 
 
 def client_main():
-    wrapper = SKILLS / 'multica-aide-cli' / 'wrapper.py'
+    wrapper = Path.cwd() / '.agents/skills/multica-aide-cli/wrapper.py'
     os.execv(sys.executable, [sys.executable, str(wrapper), *sys.argv[1:]])
 
 
@@ -28,7 +29,17 @@ def main():
     run = commands.add_parser('begin', help='host the native SOP clients and tree board')
     run.add_argument('--max-rounds', type=int, default=0)
     commands.add_parser('serve', help='host the read-only tree board')
+    dev = commands.add_parser('develop', help='run a development command inside its prepared bubblewrap sandbox')
+    dev.add_argument('--workdir', type=Path, required=True, help='the validator client worktree')
+    dev.add_argument('argv', nargs=argparse.REMAINDER)
     args = parser.parse_args()
+    if args.command == 'develop':
+        argv = args.argv[1:] if args.argv[:1] == ['--'] else args.argv
+        if not argv:
+            parser.error('develop requires a command after --')
+        binding = read(args.workdir / '.aide-development.json')
+        command = sandbox(binding['policy'], binding['candidate'], argv)
+        os.execv(command[0], command)
     config = load_config(args.config)
     if args.command == 'begin':
         if args.max_rounds < 0:

@@ -1,13 +1,14 @@
 """Durable facts shared by the installer and client SOPs."""
 import json
-import importlib.util
 import math
 from pathlib import Path
 import re
+from types import SimpleNamespace
 
 from . import monitor, sop_runtime
 
-from .standalone import API, checkout, completed_node, contract, install, label, load_config, read, search, snapshot, write
+from .standalone import API, completed_node, contract, development_running, install, load_config, metadata, read, search, wake, write
+from .worktrees import add_worktree, checkpoint, git, hidden_paths
 
 
 def paragraph(value):
@@ -18,14 +19,10 @@ def paragraph(value):
 
 def client(context):
     issue = context['cli']('get', context['issue_id'])
-    workdir = Path(issue['metadata']['query_workdir'])
+    workdir = Path(issue['metadata'].get('aide_client_workdir') or issue['metadata']['query_workdir'])
     progress = read(workdir / '.aide-client.json')
     config = load_config(progress['config_path'])
     return issue, workdir, progress, config
-
-
-def development_helper():
-    return Path.cwd() / '.pi/skills/multica-subissue-v2/branch_workflow.py'
 
 
 def observe(context):
@@ -39,9 +36,6 @@ def observe(context):
         for arg in config['benchmark']['evaluate_argv']:
             if Path(arg).is_absolute() and '{' not in arg and not Path(arg).exists():
                 data['failures'].append('test script ' + arg)
-        repository = config['benchmark'].get('repository')
-        if repository and not benchmark.validate(Path(repository)):
-            data['failures'].append('baseline delivery format')
         tree = search(config).snapshot()
         complete = None
         for node in tree['nodes']:
@@ -62,16 +56,16 @@ def observe(context):
         baseline = next((n for n in tree['nodes'] if n['id'] == tree['baseline_id']), None)
         if complete:
             route = 'finished'
+        elif progress.get('development_pending'):
+            route = 'developing'
         elif progress.get('node_id'):
             node = next(n for n in tree['nodes'] if n['id'] == progress['node_id'])
             route = ('tested' if node['score'] is not None else
                      'review' if progress.get('test_result', {}).get('state') == 'ended' else 'test')
         elif baseline is None or baseline['score'] is None:
-            route = ('test' if repository else 'idea') if progress['session_id'] == 'client-1' else 'waiting'
+            route = ('test' if benchmark.validate(Path(config['template'])) else 'idea') if progress['session_id'] == 'client-1' else 'waiting'
         else:
             route = 'idea'
-        if route == 'idea' and not progress.get('development_issue') and not development_helper().is_file():
-            data['failures'].append('native development workdir helper')
         data.update(route=route, tree=tree, node=complete, workdir=str(workdir), config=config, progress=progress)
     except (FileNotFoundError, KeyError, ValueError, TypeError, StopIteration, ImportError, SyntaxError) as error:
         data['failures'].append(str(error))
@@ -96,8 +90,6 @@ def block_setup(args, context):
 def prepare_candidate(args, context):
     issue, workdir, progress, config = client(context)
     if progress.get('candidate'):
-        if not progress.get('node_id') and not progress.get('development_issue'):
-            develop(context, workdir, progress, config)
         if progress.get('node_id'):
             return run_test(args, context)
         return {}
@@ -105,79 +97,53 @@ def prepare_candidate(args, context):
     journal = tree.snapshot()
     baseline = next((n for n in journal['nodes'] if n['id'] == journal['baseline_id']), None)
     if baseline is None or baseline['score'] is None:
-        candidate = workdir / 'candidate-baseline'
-        if not candidate.exists():
-            source = baseline['artifact'] if baseline and Path(baseline['artifact']).exists() else config['benchmark'].get('repository')
-            checkout(source, candidate)
-        progress.update(candidate=str(candidate), baseline=True, round=None)
-        if config['benchmark'].get('repository') or baseline:
-            artifact = Path(config['state']) / 'artifacts' / 'baseline'
-            tree.register_baseline_description('baseline', 'Initial baseline',
-                config['benchmark'].get('baseline_description', config['benchmark']['description']),
-                session_id=progress['session_id'], artifact=str(artifact))
-            progress['node_id'] = 'baseline'
+        identity = 'baseline'
+        source = progress['template_commit']
+        progress.update(baseline=True, round=None)
     else:
         round_context = tree.next_context(progress['session_id'])
-        candidate = workdir / ('candidate-' + round_context['round_id'])
-        if not candidate.exists():
-            checkout(round_context['restore_node']['artifact'], candidate)
-        progress.update(candidate=str(candidate), baseline=False, round=round_context)
+        identity = 'node-' + round_context['round_id']
+        source = (round_context['restore_node']['metadata']['git_commit'] if round_context['mode'] == 'refine'
+                  else progress['template_commit'])
+        progress.update(baseline=False, round=round_context)
+    base = (round_context['restore_node']['metadata']['git_branch'] if not progress['baseline']
+            and round_context['mode'] == 'refine' else git(config['template'], 'branch', '--show-current'))
+    # The installed client worktree is its first solution; later nodes retain their own worktrees.
+    candidate = (Path(progress.get('initial_candidate', workdir)) if not progress.get('used_workdir')
+                 else Path(config['workdirs']) / identity)
+    if not (candidate / '.git').exists():
+        add_worktree(config, candidate, 'aide-' + identity, source)
+    elif not progress.get('used_workdir'):
+        git(candidate, 'reset', '--hard', source)
+    progress.update(candidate=str(candidate), base_branch=base, used_workdir=True)
     write(workdir / '.aide-client.json', progress)
-    if not progress.get('node_id'):
-        develop(context, workdir, progress, config)
-    else:
-        return run_test(args, context)
+    if config['mode'] == 'val_dev':
+        for key, value in {'query_workdir': str(candidate), 'git_workdir': str(candidate),
+                           'git_branch': git(candidate, 'branch', '--show-current'), 'git_base_branch': base}.items():
+            if issue['metadata'].get(key) != value:
+                context['cli']('metadata', 'set', issue['id'], '--key', key, '--value', value, '--type', 'string', write=True)
+    if progress['baseline'] and contract(config).validate(candidate):
+        return describe(SimpleNamespace(description=config['benchmark'].get('baseline_description', config['benchmark']['description'])), context)
     return {}
-
-
-def develop(context, workdir, progress, config):
-    """Hand a candidate to the solver using the existing native workdir helper."""
-    helper = development_helper()
-    spec = importlib.util.spec_from_file_location('aide_native_workdir', helper)
-    native = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(native)
-    candidate = Path(progress['candidate'])
-    parent = context['cli']('get', context['issue_id'])
-    native.record_branch(candidate, 'main', 'main', parent, context['workspace_id'])
-    for key, value in {'git_repo_root': str(candidate), 'git_workdir': str(candidate),
-                       'git_branch': 'main', 'git_base_branch': 'main',
-                       'git_owner_issue_id': parent['id']}.items():
-        native.bind(parent, key, value)
-    installation = read(Path(config['state']) / 'installation.json')
-    goal = 'Deliver a minimal template baseline' if progress['baseline'] else 'Improve the selected solution'
-    title = goal + ' (' + progress['session_id'] + ', round ' + str(progress['completed'] + 1) + ')'
-    api = API()
-    issue = api.request('POST', '/api/issues', {
-        'title': title, 'description': goal + ' in the benchmark delivery format.\n\n' +
-            config['benchmark']['description'] + '\n\nPublic data: ' + config['benchmark']['public_data'] +
-            '\nCandidate repository: ' + progress['candidate'] +
-            '\nReturn the solution idea in one paragraph and measured evidence through native Multica.',
-        'parent_issue_id': context['issue_id'], 'project_id': config['multica']['project_id'], 'status': 'backlog'})
-    api.request('POST', '/api/issues/' + issue['id'] + '/labels', {'label_id': label(api, 'dev')})
-    binding = native.bootstrap(candidate, issue, context['workspace_id'])
-    progress['development_issue'] = {'id': issue['id'], 'workdir': binding['workdir']}
-    write(workdir / '.aide-client.json', progress)
-    api.request('PUT', '/api/issues/' + issue['id'], {'assignee_type': 'agent',
-        'assignee_id': installation['solver_id'], 'status': 'in_progress'})
 
 
 def describe(args, context):
     try:
         description = paragraph(args.description)
         issue, workdir, progress, config = client(context)
-        require_development(progress)
         candidate = Path(progress['candidate'])
         if not contract(config).validate(candidate):
             return {'accepted': False, 'instruction': 'Make the candidate a valid delivery in the benchmark format before entering test.'}
         tree = search(config)
         identity = 'baseline' if progress['baseline'] else 'node-' + progress['round']['round_id']
-        artifact = str(Path(config['state']) / 'artifacts' / identity)
+        artifact = str(candidate)
+        checkpoint_data = {'git_commit': checkpoint(candidate, description), 'git_branch': git(candidate, 'branch', '--show-current')}
         if progress['baseline']:
             tree.register_baseline_description(identity, 'Initial baseline', description,
-                session_id=progress['session_id'], artifact=artifact)
+                session_id=progress['session_id'], artifact=artifact, metadata=checkpoint_data)
         else:
             tree.register_description(identity, description.splitlines()[0][:90], description,
-                session_id=progress['session_id'], round_id=progress['round']['round_id'], artifact=artifact)
+                session_id=progress['session_id'], round_id=progress['round']['round_id'], artifact=artifact, metadata=checkpoint_data)
         progress['node_id'] = identity
         write(workdir / '.aide-client.json', progress)
         return run_test(args, context)
@@ -195,7 +161,6 @@ def record(args, context):
             return {'phase': 'test_failed', 'data': {'test_result': report, 'review': review}}
         if args.delivery != report['delivery']:
             raise ValueError('Use the complete JSON recorded by this test.')
-        require_development(progress)
         benchmark = contract(config)
         score = benchmark.score(args.delivery)
         if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score):
@@ -206,8 +171,9 @@ def record(args, context):
         node = next(n for n in tree.snapshot()['nodes'] if n['id'] == progress['node_id'])
         if not benchmark.validate(Path(progress['candidate'])):
             raise ValueError('The candidate no longer meets the delivery format.')
-        if not Path(node['artifact']).exists():
-            snapshot(progress['candidate'], node['artifact'])
+        if (git(progress['candidate'], 'rev-parse', 'HEAD') != node['metadata']['git_commit']
+                or git(progress['candidate'], 'status', '--porcelain')):
+            raise ValueError('The tested solution changed; preserve the measured worktree before recording its score.')
         node = tree.register_score(node['id'], args.delivery, review)
         progress['completed'] = sum(n['session_id'] == progress['session_id'] and n['kind'] != 'baseline'
                                     and n['score'] is not None for n in tree.snapshot()['nodes'])
@@ -219,7 +185,7 @@ def record(args, context):
 
 def next_candidate(args, context):
     issue, workdir, progress, config = client(context)
-    progress.update(candidate=None, node_id=None, development_issue=None)
+    progress.update(candidate=None, node_id=None)
     progress.pop('test_job', None)
     progress.pop('test_result', None)
     write(workdir / '.aide-client.json', progress)
@@ -240,13 +206,57 @@ def candidate_view(context):
     issue, workdir, progress, config = client(context)
     data = {'candidate': progress['candidate'], 'baseline': progress['baseline'],
             'tree': search(config).snapshot(), 'round': progress.get('round')}
-    installation = read(Path(config['state']) / 'installation.json')
-    data.update(solver_id=installation['solver_id'], project_id=config['multica']['project_id'],
+    data.update(mode=config['mode'],
                 benchmark=config['benchmark']['description'], public_data=config['benchmark']['public_data'],
-                delivery_contract=config['benchmark']['contract'], development_issue=progress.get('development_issue'))
+                delivery_contract=config['benchmark']['contract'])
+    if config['mode'] == 'separate':
+        data['developer_issue_id'] = progress['developer_issue_id']
     if progress.get('node_id'):
         data['node_id'] = progress['node_id']
     return {'data': data}
+
+
+def delegate(args, context):
+    description = paragraph(args.description)
+    issue, workdir, progress, config = client(context)
+    api = API()
+    child = progress['developer_issue_id']
+    runs = api.request('GET', '/api/issues/' + child + '/task-runs')
+    if development_running(runs):
+        return {'accepted': False, 'instruction': 'Wait for the previous developer run to finish.'}
+    policy = {'deny_paths': hidden_paths(progress['sandbox_policy']['deny_paths']),
+              'read_only_paths': [str(workdir / '.aide-development.json'),
+              str(workdir / '.aide-client.json'), str(Path(progress['candidate']) / '.agents')]}
+    command = {'candidate': progress['candidate'], 'policy': policy}
+    write(workdir / '.aide-development.json', command)
+    metadata(api, child, {'query_workdir': progress['candidate'], 'git_workdir': progress['candidate'],
+                          'git_branch': git(progress['candidate'], 'branch', '--show-current'),
+                          'git_base_branch': progress['base_branch'],
+                          'sandbox_policy': json.dumps(policy)})
+    progress.update(development_pending=True, idea_description=description)
+    write(workdir / '.aide-client.json', progress)
+    wake(api, {'issue_id': child, 'agent_id': progress['developer_agent_id']},
+         f"{description} Work in {progress['candidate']}. "
+         f"Use the bubblewrap command in this issue's description for all development commands. "
+         'Deliver the candidate for parent validation; leave the evaluator and private data to the parent.')
+    return {'phase': 'developing', 'data': {'developer_issue_id': child}}
+
+
+def development(args, context):
+    issue, workdir, progress, config = client(context)
+    api = API()
+    child = api.request('GET', '/api/issues/' + progress['developer_issue_id'])
+    if child['status'] in {'blocked', 'cancelled'}:
+        return {'phase': 'needs_setup', 'data': {'developer_issue_id': child['id'], 'status': child['status']}}
+    runs = api.request('GET', '/api/issues/' + child['id'] + '/task-runs')
+    if child['status'] not in {'in_review', 'done'} or development_running(runs):
+        return {'phase': 'developing', 'instruction': 'Await the native child delivery; recall continue after its run and cleanup finish.'}
+    if not contract(config).validate(Path(progress['candidate'])):
+        return {'accepted': False, 'instruction': 'The developer delivery does not meet the benchmark format; request a correction.'}
+    api.request('PUT', '/api/issues/' + child['id'], {'status': 'done', 'suppress_run': True})
+    progress['development_pending'] = False
+    write(workdir / '.aide-client.json', progress)
+    return describe(SimpleNamespace(description=progress['idea_description']), context)
 
 
 def test_view(context):
@@ -266,14 +276,6 @@ def run_test(args, context):
         progress['test_job'] = monitor.start(argv, progress['candidate'], workdir / 'logs')
         write(workdir / '.aide-client.json', progress)
     return monitor_test(args, context)
-
-
-def require_development(progress):
-    development = progress.get('development_issue')
-    if development:
-        child = API().request('GET', '/api/issues/' + development['id'])
-        if child.get('status_category', child['status']) != 'done':
-            raise ValueError('Development issue ' + development['id'] + ' is not done; follow the native review SOP.')
 
 
 def monitor_test(args, context):
