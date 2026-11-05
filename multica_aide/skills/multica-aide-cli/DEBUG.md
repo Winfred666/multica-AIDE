@@ -2,6 +2,16 @@
 
 ```mermaid
 flowchart TD
+    initialize["Check benchmark and saved progress"]
+    idea["Develop the candidate"]
+    test["Monitor official evaluation"]
+    review["Review the recorded delivery"]
+    tested["Select completion or another idea"]
+    waiting["Wait for the measured baseline"]
+    developing["Await the installed developer"]
+    needs_setup["Parent fixes setup"]
+    test_failed["Report unscored failure"]
+    finished["Deliver the measured solution"]
     initialize --> checks{Integrity and saved progress}
     checks -->|missing requirement: notify parent| needs_setup
     checks -->|exit met| finished

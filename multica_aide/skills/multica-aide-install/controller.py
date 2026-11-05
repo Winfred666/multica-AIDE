@@ -4,6 +4,14 @@ from pathlib import Path
 from sop import Option, Parameter, State, Workflow
 from multica_aide import campaign
 from multica_aide.standalone import install
+from multica_aide.standalone import search
+from multica_aide.viewer import render_tree
+
+
+def artifacts(context):
+    if context['phase'] not in {'installed', 'running'}:
+        return {}
+    return {'aide-tree.html': render_tree(search(campaign.installer_config()).snapshot()['nodes'])}
 
 
 def settings(context):

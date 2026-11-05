@@ -5,6 +5,12 @@ from pathlib import Path
 from sop import Completed, Option, Parameter, State, Workflow
 from multica_aide import campaign
 from multica_aide.standalone import completed_node
+from multica_aide.viewer import render_tree
+
+
+def artifacts(context):
+    _, _, _, config = campaign.client(context)
+    return {'aide-tree.html': render_tree(campaign.search(config).snapshot()['nodes'])}
 
 
 def initialize(context):

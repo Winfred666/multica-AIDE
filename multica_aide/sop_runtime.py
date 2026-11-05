@@ -4,6 +4,7 @@
 import argparse
 from datetime import datetime, timezone
 import hashlib
+from html import escape
 import importlib.util
 import json
 import os
@@ -16,6 +17,7 @@ import tempfile
 import traceback
 import uuid
 from types import SimpleNamespace
+from urllib.request import Request, urlopen
 
 
 ROOT = Path(__file__).resolve().parent
@@ -447,6 +449,68 @@ def response(result):
     return output
 
 
+def upload_artifact(filename, content):
+    """Replace this agent's named live deliverable on the native task issue."""
+    boundary = 'sop-' + uuid.uuid4().hex
+    fields = {'task_id': os.environ['MULTICA_TASK_ID'], 'issue_id': os.environ['MULTICA_ISSUE_ID']}
+    body = b''.join((f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{value}\r\n').encode()
+                    for key, value in fields.items())
+    body += (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{filename}"\r\n'
+             'Content-Type: text/html\r\n\r\n').encode() + content.encode() + f'\r\n--{boundary}--\r\n'.encode()
+    request = Request(os.environ['MULTICA_SERVER_URL'].rstrip('/') + '/api/upload-file', data=body, headers={
+        'Authorization': 'Bearer ' + os.environ['MULTICA_TOKEN'],
+        'X-Workspace-ID': os.environ['MULTICA_WORKSPACE_ID'],
+        'Content-Type': 'multipart/form-data; boundary=' + boundary})
+    with urlopen(request, timeout=30) as response:
+        return json.load(response)
+
+
+def state_artifact(context, controller, result):
+    """Show the DEBUG overview, state meanings and the exact failing boundary."""
+    status = result['status']
+    recovery = context.get('state', {}).get('recovery', {})
+    assertion = recovery.get('assertion', {})
+    phase = status
+    if result.get('error'):
+        phase = (assertion.get('result', {}).get('phase') or recovery.get('phase') or
+                 context.get('phase') or context.get('prior_status') or controller.workflow.initial)
+    debug = ROOT / 'DEBUG.md'
+    chart = re.search(r'```mermaid\s*\n(.*?)```', debug.read_text(), re.S) if debug.exists() else None
+    diagram = chart[1].rstrip() if chart else ''
+    if diagram and phase in controller.workflow.states:
+        color = '#fee2e2' if result.get('error') else '#dcfce7'
+        diagram += f'\nclassDef current fill:{color},stroke:#2563eb,stroke-width:3px\nclass {phase} current\n'
+    rows = ''.join('<tr' + (' class="current"' if state.name == phase else '') + '><td>' + escape(state.name)
+                   + '</td><td>' + escape(state.description) + '</td></tr>' for state in controller.workflow.states.values())
+    details = {'issue_id': os.environ['MULTICA_ISSUE_ID'], 'task_id': context['task_id'], 'status': status}
+    if result.get('error'):
+        details.update(failed_state=phase, boundary=assertion.get('boundary'), error=result['error'])
+    return ('<!doctype html><html lang="en"><meta charset="utf-8"><title>' + escape(controller.SOP_NAME) + '</title>'
+            '<style>body{font:15px system-ui;margin:24px;color:#172033}table{border-collapse:collapse;width:100%}'
+            'td{padding:10px;border:1px solid #cbd5e1}.current{background:#e0ecff}pre{white-space:pre-wrap}</style>'
+            '<h1>' + escape(controller.SOP_NAME) + '</h1><pre>' + escape(json.dumps(redact(details), indent=2)) + '</pre>'
+            '<pre class="mermaid">' + escape(diagram) + '</pre><table>' + rows + '</table>'
+            '<script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";'
+            'mermaid.initialize({startOnLoad:true,securityLevel:"strict"});</script></html>')
+
+
+def publish_artifacts(context, controller, result):
+    if not controller or not all(os.environ.get(key) for key in
+            ('MULTICA_SERVER_URL', 'MULTICA_TOKEN', 'MULTICA_TASK_ID', 'MULTICA_ISSUE_ID', 'MULTICA_WORKSPACE_ID')):
+        return
+    if not (result.get('state_changed') or result.get('error') or
+            result.get('accepted') and context['argv'] and context['argv'][0] != 'init'):
+        return
+    # A preview failure must never repeat a completed workflow action.
+    try:
+        upload_artifact(controller.SOP_NAME + '-state.html', state_artifact(context, controller, result))
+        if not result.get('error') and hasattr(controller, 'artifacts'):
+            for filename, content in controller.artifacts({**context, 'cli': multica, 'error': SOPError}).items():
+                upload_artifact(filename, content)
+    except Exception as error:
+        print(redact('Live artifact update failed: ' + str(error)), file=sys.stderr)
+
+
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv == ['--validate']:
@@ -464,6 +528,7 @@ def main(argv=None):
                "workspace_id": os.environ.get("MULTICA_WORKSPACE_ID"),
                "argv": argv, "script": str(ROOT / "controller.py"),
                "wrapper": str(ROOT / "wrapper.py")}
+    controller = None
     try:
         if not task_id or any(c.isspace() or c in '/\\' for c in task_id):
             raise SOPError("missing_task_id", "MULTICA_TASK_ID must be present and contain no whitespace or path separators", "Restore MULTICA_TASK_ID from the Multica run environment; do not invent an ID.")
@@ -489,6 +554,7 @@ def main(argv=None):
         if context.get('quitted'):
             state_path(context).unlink(missing_ok=True)
             result.update(status='quitted', state_changed=True, next_step=callback(str(error)))
+    publish_artifacts(context, controller, result)
     print(json.dumps(redact(response(result)), allow_nan=False))
     return 0 if result["ok"] else result.get("returncode", 1)
 

@@ -12,7 +12,8 @@ from urllib.request import Request, urlopen
 
 import yaml
 
-from . import SearchTree
+from . import SearchTree, sop_runtime
+from .viewer import render_tree
 from .worktrees import add_worktree, git, hidden_paths, prepare_template, sandbox
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -274,13 +275,18 @@ def begin(config, max_rounds=0):
     observed = None
     while True:
         node = completed_node(config)
-        if node:
-            return {'status': 'completed', 'node': node}
         nodes = search(config).snapshot()['nodes']
         summary = [(n['id'], n['score']) for n in nodes]
         if summary != observed:
             print('AIDE tree: ' + json.dumps(summary), file=sys.stderr, flush=True)
+            if os.environ.get('MULTICA_TASK_ID') and os.environ.get('MULTICA_TOKEN'):
+                try:
+                    sop_runtime.upload_artifact('aide-tree.html', render_tree(nodes))
+                except Exception as error:
+                    print(sop_runtime.redact('Live artifact update failed: ' + str(error)), file=sys.stderr)
             observed = summary
+        if node:
+            return {'status': 'completed', 'node': node}
         baseline_ready = any(n['kind'] == 'baseline' and n['score'] is not None for n in nodes)
         for client in saved['clients']:
             issue = api.request('GET', '/api/issues/' + client['issue_id'])
