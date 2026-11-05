@@ -79,7 +79,7 @@ def validate_package():
     header = skill.split('---', 2)
     if len(header) != 3 or header[0].strip():
         raise ValueError('SKILL.md needs YAML frontmatter')
-    name = re.search(r'^name:\s*([a-z0-9][a-z0-9-]*)\s*$', header[1], re.M)
+    name = re.search(r'^name:\s*([A-Za-z0-9][A-Za-z0-9-]*)\s*$', header[1], re.M)
     if not name or not re.search(r'^description:\s*\S', header[1], re.M):
         raise ValueError('SKILL.md needs a name and description')
     return name[1]
