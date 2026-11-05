@@ -52,6 +52,14 @@ class ClientSOP(unittest.TestCase):
         helper.start()
         self.addCleanup(helper.stop)
 
+    def test_installer_runs_controller_in_the_calling_task(self):
+        from multica_aide import campaign
+        result = {'status': 'completed', 'node': {'id': 'measured'}}
+        with patch.object(campaign, 'installer_config', return_value=self.config), \
+                patch('multica_aide.standalone.begin', return_value=result) as begin:
+            self.assertEqual(campaign.start_install(None, {}), {'data': result})
+        begin.assert_called_once_with(self.config)
+
     def save_settings(self):
         self.config_path.write_text(yaml.safe_dump(self.settings))
         self.config = load_config(self.config_path)

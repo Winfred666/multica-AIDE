@@ -237,11 +237,16 @@ def begin(config, max_rounds=0):
     saved['controller_pid'] = os.getpid()
     write(state_file, saved)
     started = set()
+    observed = None
     while True:
         node = completed_node(config)
         if node:
             return {'status': 'completed', 'node': node}
         nodes = search(config).snapshot()['nodes']
+        summary = [(n['id'], n['score']) for n in nodes]
+        if summary != observed:
+            print('AIDE tree: ' + json.dumps(summary), file=sys.stderr, flush=True)
+            observed = summary
         baseline_ready = any(n['kind'] == 'baseline' and n['score'] is not None for n in nodes)
         for client in saved['clients']:
             issue = api.request('GET', '/api/issues/' + client['issue_id'])
@@ -254,6 +259,7 @@ def begin(config, max_rounds=0):
                 entry = '.pi/skills/multica-aide-cli/wrapper.py'
                 wake(api, client, 'Run in this issue\'s workdir: ' + shlex.join([sys.executable, entry]))
                 started.add(client['session_id'])
+                print('Started ' + client['session_id'] + ': ' + client['issue_id'], file=sys.stderr, flush=True)
         if max_rounds and all(read(Path(c['workdir']) / '.aide-client.json')['completed'] >= max_rounds for c in saved['clients']):
             return {'status': 'round_limit', 'nodes': nodes}
         time.sleep(config.get('poll_seconds', 10))

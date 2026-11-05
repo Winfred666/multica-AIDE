@@ -19,6 +19,6 @@ workflow = Workflow(
     State('confirm', 'Confirm D, N, models, port, knowledge base and benchmark settings; reuse answers already given.',
           view=settings, options=(Option('install', 'installed', 'Install the confirmed configuration.', campaign.confirm_install),)),
     State('installed', 'The native clients are prepared. Start their SOP loop and HTML board.',
-          options=(Option('start', 'running', 'Start the campaign.', campaign.start_install),)),
-    State('running', 'The controller is running. Keep the parent issue active until the benchmark goal is delivered.', final=True),
+          options=(Option('start', 'running', 'Run the campaign in this task until it completes or needs setup.', campaign.start_install),)),
+    State('running', 'The campaign controller returned. Report its measured result or setup blocker.', final=True),
 )

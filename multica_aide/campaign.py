@@ -4,10 +4,8 @@ import importlib.util
 import math
 from pathlib import Path
 import re
-import subprocess
-import sys
 
-from .standalone import API, LAUNCHER, checkout, completed_node, contract, install, label, load_config, read, search, snapshot, write
+from .standalone import API, checkout, completed_node, contract, install, label, load_config, read, search, snapshot, write
 
 
 def paragraph(value):
@@ -266,9 +264,5 @@ def confirm_install(args, context):
 
 
 def start_install(args, context):
-    config = installer_config()
-    path = Path(config['state'])
-    with (path / 'controller.log').open('a') as output:
-        process = subprocess.Popen([sys.executable, str(LAUNCHER), '--config', config['config_path'], 'begin'],
-                                   stdout=output, stderr=output, start_new_session=True)
-    return {'data': {'controller_pid': process.pid, 'log': str(path / 'controller.log'), 'port': config.get('port')}}
+    from .standalone import begin
+    return {'data': begin(installer_config())}

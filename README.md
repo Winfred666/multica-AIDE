@@ -29,3 +29,12 @@ contract. Direct installation starts with `python3 run.py install`.
 no knowledge base, solver `gpt-6.1-terra` and babysitter `gpt-6-luna`. Installation
 confirms these settings and inherits the installer's native runtime. Local
 configuration, datasets, solution artifacts and journals stay outside version control.
+
+The installer runs its controller in the foreground so its native issue task
+owns the monitoring lifetime. The controller streams tree changes and client
+starts to stderr. The HTML server is independently read-only.
+
+For an embedded tree, a node or structured delivery may include
+`display: {"score": "8,200 recorded tokens", "labels": ["12 execution steps"]}`.
+These caller-supplied labels control presentation; the numeric score still
+controls search and ranking.

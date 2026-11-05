@@ -14,7 +14,7 @@ python3 run.py install
 
 Follow the returned option commands in order. The installing issue prepares the
 benchmark and environment, confirms settings, creates the native clients, and
-starts the controller and HTML board. Keep the parent issue active until a
+runs the foreground controller and hosts the HTML board. Keep the parent issue active until a
 measured solution meets the requested goal. Reuse configuration answers already
 given, including draft count D, client count N, models, port and knowledge base.
 Before editing installed software, stop its controller and native tasks. Preserve
@@ -66,7 +66,7 @@ owned workdir. Follow the returned development issue through native review and
 acceptance before testing the candidate. The module supplies no development or
 review skills. Score registration requires the dev child's native acceptance.
 
-The controller starts client 1 to establish a measured root, then enables all
+The foreground controller starts client 1 to establish a measured root, then enables all
 clients. The configured port hosts the read-only tree at `/` and `/tree.json`.
 `python3 run.py --config config.local.yaml begin` runs the controller in the
 foreground; `serve` hosts the tree independently.
@@ -130,3 +130,9 @@ AIDE records `put_forward_at` at description registration and `scored_at` and
 `test_duration_seconds` at score registration. The canvas labels put-forward time
 and test duration beneath the score. Keep detailed evaluation evidence with the
 caller. Generated state, data, artifacts, logs and local configuration stay ignored.
+
+The canvas accepts optional caller-owned `display` content on a node or its JSON
+delivery: `{"score": "8,200 recorded tokens", "labels": ["12 execution steps"]}`.
+`score` replaces the visible number; `labels` appear below the timing labels.
+The numeric node score continues to rank solutions. AIDE does not interpret the
+labels or the caller's evaluation metrics.
