@@ -275,7 +275,7 @@ def run_test(args, context):
         argv = [arg.replace('{solution}', progress['candidate']) for arg in config['benchmark']['evaluate_argv']]
         progress['test_job'] = monitor.start(argv, progress['candidate'], workdir / 'logs')
         write(workdir / '.aide-client.json', progress)
-    return monitor_test(args, context)
+    return {'phase': 'test', 'data': {'test_job': progress['test_job']}}
 
 
 def monitor_test(args, context):

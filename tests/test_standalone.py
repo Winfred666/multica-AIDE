@@ -102,6 +102,8 @@ class ClientSOP(unittest.TestCase):
         self.assertFalse(self.run_sop('test', '--description', 'A minimal template baseline.')['accepted'])
         delivery = self.solution(.9)
         test = self.run_sop('test', '--description', 'A minimal template baseline.')
+        self.assertEqual(test['status'], 'test')
+        test = self.run_sop('continue')
         self.assertEqual(test['status'], 'review')
         self.assertEqual(test['data']['delivery'], delivery)
         self.assertIsNone(search(self.config).snapshot()['nodes'][0]['score'])
@@ -109,7 +111,8 @@ class ClientSOP(unittest.TestCase):
         self.assertEqual(self.run_sop('record', '--delivery', json.dumps(delivery), '--review', 'The baseline is measured.')['status'], 'tested')
         self.assertEqual(self.run_sop('continue')['status'], 'idea')
         improved = self.solution(.2)
-        self.assertEqual(self.run_sop('test', '--description', 'An improved candidate.')['status'], 'review')
+        self.assertEqual(self.run_sop('test', '--description', 'An improved candidate.')['status'], 'test')
+        self.assertEqual(self.run_sop('continue')['status'], 'review')
         self.assertEqual(self.run_sop('record', '--delivery', json.dumps(improved), '--review', 'The measured loss meets the goal.')['status'], 'tested')
         result = self.run_sop('continue')
         self.assertTrue(result['finished'])
@@ -133,6 +136,7 @@ class ClientSOP(unittest.TestCase):
         for loss in (.9, .6):
             delivery = self.solution(loss)
             self.run_sop('test', '--description', 'Improve the measured solution.')
+            self.run_sop('continue')
             self.run_sop('record', '--delivery', json.dumps(delivery), '--review', 'The measured solution is valid.')
             self.run_sop('continue')
         progress = self.progress()
@@ -148,6 +152,7 @@ class ClientSOP(unittest.TestCase):
         self.run_sop('enter')
         delivery = self.solution(.9)
         self.run_sop('test', '--description', 'A measured solution.')
+        self.assertEqual(self.run_sop('continue')['status'], 'review')
         self.solution(.2)
         result = self.run_sop('record', '--delivery', json.dumps(delivery), '--review', 'The candidate was edited.')
         self.assertFalse(result['accepted'])
@@ -181,6 +186,8 @@ class ClientSOP(unittest.TestCase):
             self.assertEqual(self.run_sop('continue')['status'], 'developing')
             runs = []
             result = self.run_sop('continue')
+            self.assertEqual(result['status'], 'test')
+            result = self.run_sop('continue')
             self.assertEqual(result['status'], 'review')
             delivery = result['data']['delivery']
             self.run_sop('record', '--delivery', json.dumps(delivery), '--review', 'Validation measured this delivery.')
@@ -195,7 +202,8 @@ class ClientSOP(unittest.TestCase):
         progress['template_commit'] = commit
         write(self.workdir / '.aide-client.json', progress)
         self.assertEqual(self.run_sop()['data']['route'], 'test')
-        self.assertEqual(self.run_sop('enter')['status'], 'review')
+        self.assertEqual(self.run_sop('enter')['status'], 'test')
+        self.assertEqual(self.run_sop('continue')['status'], 'review')
         self.assertIsNone(search(self.config).snapshot()['nodes'][0]['score'])
         self.assertFalse(self.run_sop('test', '--description', 'Cannot skip the pending test.')['accepted'])
 
@@ -206,6 +214,8 @@ class ClientSOP(unittest.TestCase):
         self.settings['benchmark']['evaluate_argv'] = [sys.executable, '-c', 'import sys; sys.exit(7)', '{solution}']
         self.save_settings()
         result = self.run_sop('test', '--description', 'A baseline with a failing evaluator.')
+        self.assertEqual(result['status'], 'test')
+        result = self.run_sop('continue')
         self.assertEqual(result['status'], 'review')
         self.assertEqual(result['data']['returncode'], 7)
         self.assertEqual(self.run_sop('record', '--review', 'The evaluator failed; its logs identify the blocker.')['status'], 'test_failed')
@@ -223,6 +233,9 @@ class ClientSOP(unittest.TestCase):
         self.assertEqual(result['status'], 'test')
         job = self.progress()['test_job']
         self.addCleanup(monitor.stop, job)
+        result = self.run_sop('continue')
+        self.assertEqual(result['status'], 'test')
+        self.assertIn('WARNING', str(result['data']['new_output']))
         with patch.object(monitor, 'INTERVALS', (.001,)):
             result = self.run_sop('continue')
         self.assertEqual(result['status'], 'test')
