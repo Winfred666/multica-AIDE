@@ -138,5 +138,5 @@ class Workflow:
         vars(args).update(vars(values))
         result = option.action(args, context) if option.action else {}
         result = result or {}
-        target = self.states[option.target] if result.get('accepted', True) else state
+        target = self.states[result.get('phase', option.target)] if result.get('accepted', True) else state
         return self.guidance(target, context, result)

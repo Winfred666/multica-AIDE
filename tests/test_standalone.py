@@ -99,8 +99,8 @@ class ClientSOP(unittest.TestCase):
         self.assertFalse(self.run_sop('test', '--description', 'A minimal template baseline.')['accepted'])
         delivery = self.solution(.9)
         test = self.run_sop('test', '--description', 'A minimal template baseline.')
-        self.assertEqual(test['status'], 'test')
-        self.assertIn(self.progress()['candidate'], test['data']['test_command'])
+        self.assertEqual(test['status'], 'review')
+        self.assertEqual(test['data']['delivery'], delivery)
         self.assertIsNone(search(self.config).snapshot()['nodes'][0]['score'])
         self.assertFalse(self.run_sop('record', '--delivery', json.dumps(delivery), '--review', 'Two\n\nParagraphs.')['accepted'])
         progress = self.progress()
@@ -114,7 +114,7 @@ class ClientSOP(unittest.TestCase):
             self.assertEqual(self.run_sop('record', '--delivery', json.dumps(delivery), '--review', 'The baseline is measured.')['status'], 'tested')
         self.assertEqual(self.run_sop('continue')['status'], 'idea')
         improved = self.solution(.2)
-        self.assertEqual(self.run_sop('test', '--description', 'An improved candidate.')['status'], 'test')
+        self.assertEqual(self.run_sop('test', '--description', 'An improved candidate.')['status'], 'review')
         self.assertEqual(self.run_sop('record', '--delivery', json.dumps(improved), '--review', 'The measured loss meets the goal.')['status'], 'tested')
         result = self.run_sop('continue')
         self.assertTrue(result['finished'])
@@ -131,9 +131,44 @@ class ClientSOP(unittest.TestCase):
         self.settings['benchmark']['repository'] = str(repository)
         self.save_settings()
         self.assertEqual(self.run_sop()['data']['route'], 'test')
-        self.assertEqual(self.run_sop('enter')['status'], 'test')
+        self.assertEqual(self.run_sop('enter')['status'], 'review')
         self.assertIsNone(search(self.config).snapshot()['nodes'][0]['score'])
         self.assertFalse(self.run_sop('test', '--description', 'Cannot skip the pending test.')['accepted'])
+
+    def test_test_failure_enters_review_and_never_invents_a_score(self):
+        self.run_sop()
+        self.run_sop('enter')
+        self.solution(.9)
+        self.settings['benchmark']['evaluate_argv'] = [sys.executable, '-c', 'import sys; sys.exit(7)', '{solution}']
+        self.save_settings()
+        result = self.run_sop('test', '--description', 'A baseline with a failing evaluator.')
+        self.assertEqual(result['status'], 'review')
+        self.assertEqual(result['data']['returncode'], 7)
+        self.assertEqual(self.run_sop('record', '--review', 'The evaluator failed; its logs identify the blocker.')['status'], 'test_failed')
+        self.assertIsNone(search(self.config).snapshot()['nodes'][0]['score'])
+
+    def test_cli_warning_continue_and_exception_use_the_same_test_job(self):
+        from multica_aide import monitor
+        self.run_sop()
+        self.run_sop('enter')
+        self.solution(.9)
+        self.settings['benchmark']['evaluate_argv'] = [sys.executable, '-c',
+            "import sys,time; print('WARNING: slow test',file=sys.stderr,flush=True); time.sleep(30)", '{solution}']
+        self.save_settings()
+        result = self.run_sop('test', '--description', 'A long experiment.')
+        self.assertEqual(result['status'], 'test')
+        job = self.progress()['test_job']
+        self.addCleanup(monitor.stop, job)
+        with patch.object(monitor, 'INTERVALS', (.001,)):
+            result = self.run_sop('continue')
+        self.assertEqual(result['status'], 'test')
+        record = read(self.skill / '.state/native-test-task.json')
+        self.assertEqual(record['monitor']['checkpoint'], 1)
+        self.assertNotIn('WARNING', str(result['data']['new_output']))
+        result = self.run_sop('exception')
+        self.assertEqual(result['status'], 'review')
+        self.assertTrue(result['data']['exception'])
+        self.assertEqual(self.progress()['test_job'], job)
 
     def test_existing_passing_delivery_exits_before_creating_a_candidate(self):
         artifact = self.root / 'passing'

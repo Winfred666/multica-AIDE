@@ -56,7 +56,9 @@ Each of the N query clients follows
 that SOP when the package is installed. The SOP checks benchmark integrity, then
 supplies the candidate path, selected tree context and official test command.
 Each idea needs one description paragraph before test; each measurement needs the
-full JSON delivery and one review paragraph. Missing initialization requirements
+full JSON delivery and one review paragraph. Official tests use proactive
+keyword + time-trigger monitoring; follow recalls in the same turn. Development uses
+passive native child delivery/block steering. Missing initialization requirements
 block the client and notify its parent. Native Multica owns development, review,
 sub-issues and exception recovery.
 

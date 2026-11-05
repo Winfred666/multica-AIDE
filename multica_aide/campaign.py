@@ -5,6 +5,8 @@ import math
 from pathlib import Path
 import re
 
+from . import monitor, sop_runtime
+
 from .standalone import API, checkout, completed_node, contract, install, label, load_config, read, search, snapshot, write
 
 
@@ -62,7 +64,8 @@ def observe(context):
             route = 'finished'
         elif progress.get('node_id'):
             node = next(n for n in tree['nodes'] if n['id'] == progress['node_id'])
-            route = 'tested' if node['score'] is not None else 'test'
+            route = ('tested' if node['score'] is not None else
+                     'review' if progress.get('test_result', {}).get('state') == 'ended' else 'test')
         elif baseline is None or baseline['score'] is None:
             route = ('test' if repository else 'idea') if progress['session_id'] == 'client-1' else 'waiting'
         else:
@@ -95,6 +98,8 @@ def prepare_candidate(args, context):
     if progress.get('candidate'):
         if not progress.get('node_id') and not progress.get('development_issue'):
             develop(context, workdir, progress, config)
+        if progress.get('node_id'):
+            return run_test(args, context)
         return {}
     tree = search(config)
     journal = tree.snapshot()
@@ -120,6 +125,8 @@ def prepare_candidate(args, context):
     write(workdir / '.aide-client.json', progress)
     if not progress.get('node_id'):
         develop(context, workdir, progress, config)
+    else:
+        return run_test(args, context)
     return {}
 
 
@@ -158,6 +165,7 @@ def describe(args, context):
     try:
         description = paragraph(args.description)
         issue, workdir, progress, config = client(context)
+        require_development(progress)
         candidate = Path(progress['candidate'])
         if not contract(config).validate(candidate):
             return {'accepted': False, 'instruction': 'Make the candidate a valid delivery in the benchmark format before entering test.'}
@@ -172,7 +180,7 @@ def describe(args, context):
                 session_id=progress['session_id'], round_id=progress['round']['round_id'], artifact=artifact)
         progress['node_id'] = identity
         write(workdir / '.aide-client.json', progress)
-        return {}
+        return run_test(args, context)
     except ValueError as error:
         return {'accepted': False, 'instruction': str(error)}
 
@@ -181,11 +189,13 @@ def record(args, context):
     try:
         review = paragraph(args.review)
         issue, workdir, progress, config = client(context)
-        development = progress.get('development_issue')
-        if development:
-            child = API().request('GET', '/api/issues/' + development['id'])
-            if child.get('status_category', child['status']) != 'done':
-                raise ValueError('Complete native review and acceptance of development issue ' + development['id'] + ' before scoring.')
+        report = progress['test_result']
+        monitor.write(Path(progress['test_job']) / 'review.json', {'review': review, **report})
+        if 'delivery' not in report:
+            return {'phase': 'test_failed', 'data': {'test_result': report, 'review': review}}
+        if args.delivery != report['delivery']:
+            raise ValueError('Use the complete JSON recorded by this test.')
+        require_development(progress)
         benchmark = contract(config)
         score = benchmark.score(args.delivery)
         if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score):
@@ -210,6 +220,8 @@ def record(args, context):
 def next_candidate(args, context):
     issue, workdir, progress, config = client(context)
     progress.update(candidate=None, node_id=None, development_issue=None)
+    progress.pop('test_job', None)
+    progress.pop('test_result', None)
     write(workdir / '.aide-client.json', progress)
     return prepare_candidate(args, context)
 
@@ -243,7 +255,51 @@ def test_view(context):
     import shlex
     view['data']['test_command'] = shlex.join([arg.replace('{solution}', progress['candidate'])
                                              for arg in config['benchmark']['evaluate_argv']])
+    view['data']['test_result'] = progress.get('test_result')
     return view
+
+
+def run_test(args, context):
+    issue, workdir, progress, config = client(context)
+    if not progress.get('test_job'):
+        argv = [arg.replace('{solution}', progress['candidate']) for arg in config['benchmark']['evaluate_argv']]
+        progress['test_job'] = monitor.start(argv, progress['candidate'], workdir / 'logs')
+        write(workdir / '.aide-client.json', progress)
+    return monitor_test(args, context)
+
+
+def require_development(progress):
+    development = progress.get('development_issue')
+    if development:
+        child = API().request('GET', '/api/issues/' + development['id'])
+        if child.get('status_category', child['status']) != 'done':
+            raise ValueError('Complete native review and acceptance of development issue ' + development['id'] + ' before testing or scoring.')
+
+
+def monitor_test(args, context):
+    issue, workdir, progress, config = client(context)
+    report = monitor.wait(progress['test_job'], context['state'].setdefault('monitor', {}))
+    sop_runtime.save_state(context, context['state'])
+    if report['state'] == 'ended' and report['returncode'] == 0 and not report.get('exception'):
+        try:
+            delivery = monitor.delivery(progress['test_job'])
+            score = contract(config).score(delivery)
+            if isinstance(score, bool) or not isinstance(score, (int, float)) or not math.isfinite(score):
+                raise ValueError('The test must record a finite benchmark score.')
+            if not isinstance(contract(config).is_complete(delivery), bool):
+                raise ValueError('The exit condition must return a boolean.')
+            report['delivery'] = delivery
+        except (ValueError, KeyError, TypeError) as error:
+            report['error'] = str(error)
+    progress['test_result'] = report
+    write(workdir / '.aide-client.json', progress)
+    return {'phase': 'review' if report['state'] == 'ended' else 'test', 'data': report}
+
+
+def exception_test(args, context):
+    issue, workdir, progress, config = client(context)
+    monitor.stop(progress['test_job'])
+    return monitor_test(args, context)
 
 
 def installer_config():

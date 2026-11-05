@@ -34,6 +34,11 @@ The installer runs its controller in the foreground so its native issue task
 owns the monitoring lifetime. The controller streams tree changes and client
 starts to stderr. The HTML server is independently read-only.
 
+Official client tests run in the background and keep logging between foreground
+monitor recalls. Keyword and time triggers return new output with `continue` and
+`exception` choices; test exit advances to review. Native development sub-issues
+use passive delivery/block steering.
+
 For an embedded tree, a node or structured delivery may include
 `display: {"score": "8,200 recorded tokens", "labels": ["12 execution steps"]}`.
 These caller-supplied labels control presentation; the numeric score still

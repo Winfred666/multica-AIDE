@@ -24,13 +24,15 @@ def entry(context):
 def phase_check(context):
     issue, workdir, progress, config = campaign.client(context)
     phase = context.get('result', {}).get('phase', context['phase'])
-    if phase in {'idea', 'test', 'tested'} and not Path(progress['candidate']).is_dir():
+    if phase in {'idea', 'test', 'review', 'tested'} and not Path(progress['candidate']).is_dir():
         raise AssertionError('Candidate directory is missing.')
-    if phase in {'test', 'tested'}:
+    if phase in {'test', 'review', 'tested'}:
         nodes = campaign.search(config).snapshot()['nodes']
         node = next(n for n in nodes if n['id'] == progress['node_id'])
         if (node['score'] is not None) != (phase == 'tested'):
             raise AssertionError('The solution node does not match the test state.')
+    if phase == 'review' and progress.get('test_result', {}).get('state') != 'ended':
+        raise AssertionError('The experiment must end before review.')
     if phase == 'finished' and completed_node(config) is None:
         raise AssertionError('The delivered node does not meet the exit condition.')
     return progress
@@ -44,6 +46,15 @@ def after_test(context):
                    campaign.finish if complete else campaign.next_candidate),)
 
 
+def review_options(context):
+    issue, workdir, progress, config = campaign.client(context)
+    delivery = 'delivery' in progress['test_result']
+    return (Option('record', 'tested', 'Register the recorded JSON delivery and one review paragraph; report an unscored test failure through native Multica.',
+                   campaign.record, params=(
+                       Parameter('--delivery', 'Complete JSON delivery recorded by this test', type=json.loads, required=delivery),
+                       Parameter('--review', 'One paragraph reviewing the measured result'))),)
+
+
 workflow = Workflow(
     State('initialize', 'Check the benchmark, baseline, solution tree and delivery exit condition.',
           initial=True, precheck=initialize, options=entry,
@@ -53,16 +64,18 @@ workflow = Workflow(
               Option('test', 'test', 'Register the idea description and enter test.', campaign.describe,
                      params=(Parameter('--description', 'One paragraph describing this solution idea'),)),
           )),
-    State('test', 'Run the official test. Supply its JSON delivery and one review paragraph.',
+    State('test', 'Read the collected test progress. Choose and invoke continue or exception in this turn.',
           precheck=phase_check, view=campaign.test_view, options=(
-              Option('record', 'tested', 'Register the measured delivery and review.', campaign.record, params=(
-                  Parameter('--delivery', 'Official test delivery as JSON', type=json.loads),
-                  Parameter('--review', 'One paragraph reviewing the measured result'))),
+              Option('continue', 'test', 'Monitor until an important log, time checkpoint or test exit.', campaign.monitor_test),
+              Option('exception', 'review', 'End this test and review its recorded result.', campaign.exception_test),
           )),
+    State('review', 'Supply the official JSON delivery and one review paragraph. An interrupted or invalid test remains unscored.',
+          precheck=phase_check, view=campaign.test_view, options=review_options),
     State('tested', 'The node is scored. The exit condition selects completion or another idea.',
           precheck=phase_check, view=campaign.candidate_view, options=after_test),
     State('waiting', 'Wait for client-1 to establish the measured root.', options=(
         Option('check', 'initialize', 'Check the shared baseline again.'),)),
     State('needs_setup', 'The parent must fix the failed initialization check.', final=True),
+    State('test_failed', 'The test has no scorable delivery. Report the recorded review and logs through native Multica block.', final=True),
     State('finished', 'A measured solution meets the benchmark exit condition. Deliver that node through native Multica.', final=True, precheck=phase_check),
 )

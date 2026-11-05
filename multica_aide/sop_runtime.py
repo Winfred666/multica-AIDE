@@ -199,6 +199,7 @@ def transition(args, context, controller):
     workflow = controller.workflow
     phases = set(workflow.states)
     state = read_state(context, phases | {'error', 'blocked'})
+    context['state'] = state
     before = state.get('status')
     context['prior_status'] = before
     phase = before or workflow.initial
