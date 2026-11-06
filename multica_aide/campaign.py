@@ -3,6 +3,7 @@ import json
 import math
 from pathlib import Path
 import re
+import subprocess
 from types import SimpleNamespace
 
 from . import monitor, sop_runtime
@@ -19,8 +20,11 @@ def paragraph(value):
 
 def client(context):
     issue = context['cli']('get', context['issue_id'])
-    workdir = Path(issue['metadata'].get('aide_client_workdir') or issue['metadata']['query_workdir'])
-    progress = read(workdir / '.aide-client.json')
+    props = issue['metadata']
+    workdir = Path(props.get('aide_client_workdir') or props.get('query_workdir') or props.get('git_workdir') or Path.cwd())
+    progress_file = (workdir / '.aide-client.json').resolve()
+    workdir = progress_file.parent
+    progress = read(progress_file)
     config = load_config(progress['config_path'])
     return issue, workdir, progress, config
 
@@ -117,9 +121,15 @@ def prepare_candidate(args, context):
         git(candidate, 'reset', '--hard', source)
     progress.update(candidate=str(candidate), base_branch=base, used_workdir=True)
     write(workdir / '.aide-client.json', progress)
-    if config['mode'] == 'val_dev':
-        for key, value in {'query_workdir': str(candidate), 'git_workdir': str(candidate),
-                           'git_branch': git(candidate, 'branch', '--show-current'), 'git_base_branch': base}.items():
+    if candidate != workdir:
+        (candidate / '.aide-client.json').symlink_to(workdir / '.aide-client.json')
+    if config.get('prepare_argv'):
+        subprocess.run([arg.replace('{solution}', str(candidate)) for arg in config['prepare_argv']],
+                       cwd=candidate, check=True)
+    if config['mode'] == 'val_dev' and issue['metadata'].get('query_workdir'):
+        binding = {'git_branch': git(candidate, 'branch', '--show-current'), 'git_base_branch': base}
+        binding.update(query_workdir=str(candidate), git_workdir=str(candidate))
+        for key, value in binding.items():
             if issue['metadata'].get(key) != value:
                 context['cli']('metadata', 'set', issue['id'], '--key', key, '--value', value, '--type', 'string', write=True)
     if progress['baseline'] and contract(config).validate(candidate):

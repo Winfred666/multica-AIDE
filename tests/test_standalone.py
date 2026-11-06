@@ -1,5 +1,5 @@
 import json
-from contextlib import redirect_stderr
+from contextlib import chdir, redirect_stderr
 from io import StringIO
 from pathlib import Path
 import shutil
@@ -91,6 +91,11 @@ class ClientSOP(unittest.TestCase):
         return evaluate(self.config, path)
 
     def test_empty_baseline_then_draft_requires_description_delivery_and_review(self):
+        prepared = self.root / 'prepared.log'
+        self.settings['prepare_argv'] = [sys.executable, '-c',
+            'from pathlib import Path; import sys; '
+            f'Path({str(prepared)!r}).open("a").write(sys.argv[1]+"\\n")', '{solution}']
+        self.save_settings()
         self.assertEqual(self.run_sop()['status'], 'initialize')
         self.assertFalse(self.run_sop('record', '--delivery', '{}', '--review', 'Premature.')['accepted'])
         self.assertEqual(search(self.config).snapshot()['nodes'], [])
@@ -127,6 +132,12 @@ class ClientSOP(unittest.TestCase):
             self.assertTrue((Path(node['artifact']) / '.git').is_file())
             self.assertEqual(git(node['artifact'], 'rev-parse', 'HEAD'), node['metadata']['git_commit'])
         self.assertEqual(json.loads((Path(nodes[0]['artifact']) / 'submission.json').read_text())['loss'], .9)
+        self.assertEqual(prepared.read_text().splitlines(), [n['artifact'] for n in nodes])
+        self.assertTrue((Path(nodes[1]['artifact']) / '.aide-client.json').is_symlink())
+        from multica_aide import campaign
+        self.issue['metadata'] = {}
+        with chdir(nodes[1]['artifact']):
+            self.assertEqual(campaign.client({'cli': self.cli, 'issue_id': self.issue['id']})[1], self.workdir)
 
     def test_refinement_branches_from_selected_commit_and_preserves_scored_worktrees(self):
         self.settings['drafts'] = 1

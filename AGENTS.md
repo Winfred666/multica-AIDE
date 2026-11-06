@@ -84,3 +84,7 @@ foreground; `serve` hosts the tree independently.
 Use `SearchTree` between the caller's phases and `multica_aide.viewer.render_tree`
 for its canvas. Give independent loops separate tree directories. The caller owns
 restoration, development, evaluation and termination; embedding runs no installer.
+
+When using the client SOP in an outer module, optional `prepare_argv` runs after
+restoring each candidate. `{solution}` is its Git worktree; use this hook for
+native execution bindings.
