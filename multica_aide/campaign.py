@@ -127,7 +127,7 @@ def prepare_candidate(args, context):
         subprocess.run([arg.replace('{solution}', str(candidate)) for arg in config['prepare_argv']],
                        cwd=candidate, check=True)
     if config['mode'] == 'val_dev' and issue['metadata'].get('query_workdir'):
-        binding = {'git_branch': git(candidate, 'branch', '--show-current'), 'git_base_branch': base}
+        binding = {'git_branch': git(candidate, 'branch', '--show-current'), 'git_parent_branch': base}
         binding.update(query_workdir=str(candidate), git_workdir=str(candidate))
         for key, value in binding.items():
             if issue['metadata'].get(key) != value:
@@ -241,7 +241,7 @@ def delegate(args, context):
     write(workdir / '.aide-development.json', command)
     metadata(api, child, {'query_workdir': progress['candidate'], 'git_workdir': progress['candidate'],
                           'git_branch': git(progress['candidate'], 'branch', '--show-current'),
-                          'git_base_branch': progress['base_branch'],
+                          'git_parent_branch': progress['base_branch'],
                           'sandbox_policy': json.dumps(policy)})
     progress.update(development_pending=True, idea_description=description)
     write(workdir / '.aide-client.json', progress)

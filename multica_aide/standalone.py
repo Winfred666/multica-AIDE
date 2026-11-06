@@ -197,7 +197,7 @@ def install(config, parent_issue, confirm=False):
         api.request('POST', '/api/issues/' + issue['id'] + '/labels', {'label_id': label(api, 'dev')})
         metadata(api, issue['id'], {'query_workdir': str(workdir), 'aide_client_workdir': str(workdir), 'aide_checkout': str(ROOT),
                                    'git_repo_root': str(repository), 'git_workdir': str(workdir),
-                                   'git_branch': branch, 'git_base_branch': base, 'git_owner_issue_id': issue['id']})
+                                   'git_branch': branch, 'git_parent_branch': base, 'git_owner_issue_id': issue['id']})
         progress = {'config_path': config['config_path'], 'session_id': session,
                     'completed': 0, 'candidate': None, 'node_id': None, 'finished': False,
                     'template_commit': template_commit}
@@ -215,7 +215,7 @@ def install(config, parent_issue, confirm=False):
                        config['config_path'], config['state'], config['tree']])}
             metadata(api, child['id'], {'sandbox_policy': json.dumps(policy), 'query_workdir': str(candidate),
                 'git_repo_root': str(repository), 'git_workdir': str(candidate), 'git_branch': branch + '-development',
-                'git_base_branch': branch, 'git_owner_issue_id': child['id']})
+                'git_parent_branch': branch, 'git_owner_issue_id': child['id']})
             api.request('PUT', '/api/issues/' + child['id'],
                         {'assignee_type': 'agent', 'assignee_id': developer['id'], 'suppress_run': True})
             progress.update(developer_issue_id=child['id'], developer_agent_id=developer['id'],
