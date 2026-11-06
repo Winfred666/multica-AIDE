@@ -279,11 +279,7 @@ def begin(config, max_rounds=0):
         summary = [(n['id'], n['score']) for n in nodes]
         if summary != observed:
             print('AIDE tree: ' + json.dumps(summary), file=sys.stderr, flush=True)
-            if os.environ.get('MULTICA_TASK_ID') and os.environ.get('MULTICA_TOKEN'):
-                try:
-                    sop_runtime.upload_artifact('aide-tree.html', render_tree(nodes))
-                except Exception as error:
-                    print(sop_runtime.redact('Live artifact update failed: ' + str(error)), file=sys.stderr)
+            sop_runtime.upload_artifact('aide-tree.html', render_tree(nodes))
             observed = summary
         if node:
             return {'status': 'completed', 'node': node}

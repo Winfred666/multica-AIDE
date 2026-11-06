@@ -17,4 +17,4 @@ AIDE_cli = "multica_aide.__main__:client_main"
 include = ["multica_aide*"]
 
 [tool.setuptools.package-data]
-multica_aide = ["*.html", "skills/*/*.py", "skills/*/*.md"]
+multica_aide = ["*.html", "skills/*/*.py", "skills/*/*.md", "skills/*/config.json"]

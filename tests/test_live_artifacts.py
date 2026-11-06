@@ -29,13 +29,18 @@ class LiveArtifacts(unittest.TestCase):
         shutil.copy(PACKAGE / 'sop.py', self.root / 'sop.py')
         shutil.copy(PACKAGE / 'sop_runtime.py', self.root / 'wrapper.py')
         (self.root / 'SKILL.md').write_text('---\nname: multica-example\ndescription: Measure an idea.\n---\n')
-        (self.root / 'DEBUG.md').write_text('```mermaid\nflowchart LR\nidea --> review --> finished\n```\n')
+        (self.root / 'config.json').write_text('{"DEBUG": true}')
         (self.root / 'controller.py').write_text('''
 from pathlib import Path
-from sop import State, Option, Workflow
+from sop import Completed, State, Option, Workflow
 ROOT = Path(__file__).parent
+def initialize(context):
+    if (ROOT / 'already-finished').exists():
+        raise Completed('The delivery already meets the goal.')
 def test(args, context):
     context['state']['score'] = .25
+    if (ROOT / 'skip-review').exists():
+        return {'phase': 'finished'}
 def finish(args, context):
     with (ROOT / 'actions').open('a') as output: output.write('finish\\n')
 def check(context):
@@ -45,8 +50,10 @@ def artifacts(context):
     context['cli']('get', context['issue_id'])
     return {'tree.html': '<!doctype html><p>score=' + str(context['state'].get('score')) + '</p>'}
 workflow = Workflow(
-    State('idea', 'Develop a measured idea.', initial=True, options=(Option('test', 'review', 'Test.', test),)),
-    State('review', 'Review the measured score.', options=(Option('finish', 'finished', 'Deliver.', finish),)),
+    State('idea', 'Develop a measured idea.', initial=True, precheck=initialize,
+          options=(Option('test', 'review', 'Test.', test),)),
+    State('review', 'Review the measured score.', options=(
+        Option('refresh', 'review', 'Refresh.', test), Option('finish', 'finished', 'Deliver.', finish))),
     State('finished', 'Deliver the accepted solution.', final=True, precheck=check))
 ''')
         self.rows, self.requests = {}, []
@@ -99,6 +106,7 @@ workflow = Workflow(
         self.assertEqual(self.call()[1]['status'], 'idea')
         self.assertIn('task-one', self.state_html())
         self.assertIn('Develop a measured idea.', self.state_html())
+        self.assertIn('idea --&gt;|test| review', self.state_html())
         requests = len(self.requests)
         self.call()
         self.call('--help')
@@ -107,6 +115,9 @@ workflow = Workflow(
         self.assertEqual(self.call('test')[1]['status'], 'review')
         self.assertIn('class review current', self.state_html())
         self.assertIn('score=0.25', self.rows[('issue-one', 'tree.html', 'text/html')]['html'])
+        requests = len(self.requests)
+        self.call('refresh')
+        self.assertEqual(len(self.requests), requests + 1)  # Existing view only; no state shift.
         self.assertEqual(self.call('finish')[1]['status'], 'finished')
         self.assertFalse((self.root / '.state/task-one.json').exists())
         self.assertIn('class finished current', self.state_html())
@@ -133,6 +144,42 @@ workflow = Workflow(
         (self.root / 'fail').unlink()
         self.assertEqual(self.call('repaired')[1]['status'], 'finished')
         self.assertEqual((self.root / 'actions').read_text(), 'finish\n')
+
+    def test_debug_is_opt_in_and_existing_views_remain_live(self):
+        for config in (None, '{"DEBUG": false}'):
+            with self.subTest(config=config):
+                path = self.root / 'config.json'
+                if config is None:
+                    path.unlink()
+                else:
+                    path.write_text(config)
+                self.rows.clear()
+                self.call()
+                self.call('test')
+                self.assertEqual(list(self.rows), [('issue-one', 'tree.html', 'text/html')])
+                self.assertIn('score=0.25', next(iter(self.rows.values()))['html'])
+                self.call('finish')
+
+    def test_chart_uses_the_actual_scripted_target(self):
+        self.call()
+        (self.root / 'skip-review').touch()
+        self.assertEqual(self.call('test')[1]['status'], 'finished')
+        self.assertIn('idea --&gt;|test| finished', self.state_html())
+        self.assertNotIn('idea --&gt;|test| review', self.state_html())
+
+    def test_chart_shows_a_failed_scripted_target_and_completion_on_entry(self):
+        self.call()
+        (self.root / 'skip-review').touch()
+        (self.root / 'fail').touch()
+        self.assertEqual(self.call('test')[1]['status'], 'error')
+        self.assertIn('idea --&gt;|test| finished', self.state_html())
+        (self.root / 'fail').unlink()
+        self.assertEqual(self.call('repaired')[1]['status'], 'finished')
+        (self.root / 'already-finished').touch()
+        with patch.dict(os.environ, {'MULTICA_TASK_ID': 'task-two'}):
+            self.assertEqual(self.call()[1]['status'], 'finished')
+        self.assertIn('task-two', self.state_html())
+        self.assertIn('class finished current', self.state_html())
 
     def test_upload_failure_preserves_action_result_and_task_record(self):
         self.call()

@@ -94,6 +94,8 @@ def load_controller():
     controller = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(controller)
     controller.SOP_NAME = name
+    config = ROOT / 'config.json'
+    controller.DEBUG = config.exists() and json.loads(config.read_text()).get('DEBUG') is True
     from sop import Workflow
     if not isinstance(getattr(controller, 'workflow', None), Workflow):
         raise ValueError('Controller must export a Workflow object named workflow')
@@ -451,6 +453,9 @@ def response(result):
 
 def upload_artifact(filename, content):
     """Replace this agent's named live deliverable on the native task issue."""
+    if not all(os.environ.get(key) for key in
+               ('MULTICA_SERVER_URL', 'MULTICA_TOKEN', 'MULTICA_TASK_ID', 'MULTICA_ISSUE_ID', 'MULTICA_WORKSPACE_ID')):
+        return
     boundary = 'sop-' + uuid.uuid4().hex
     fields = {'task_id': os.environ['MULTICA_TASK_ID'], 'issue_id': os.environ['MULTICA_ISSUE_ID']}
     body = b''.join((f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{value}\r\n').encode()
@@ -461,12 +466,16 @@ def upload_artifact(filename, content):
         'Authorization': 'Bearer ' + os.environ['MULTICA_TOKEN'],
         'X-Workspace-ID': os.environ['MULTICA_WORKSPACE_ID'],
         'Content-Type': 'multipart/form-data; boundary=' + boundary})
-    with urlopen(request, timeout=30) as response:
-        return json.load(response)
+    # A preview failure must never repeat a completed workflow action.
+    try:
+        with urlopen(request, timeout=30) as response:
+            response.read()
+    except Exception as error:
+        print(redact('Live artifact update failed: ' + str(error)), file=sys.stderr)
 
 
 def state_artifact(context, controller, result):
-    """Show the DEBUG overview, state meanings and the exact failing boundary."""
+    """Render the controller's workflow and highlight the current or failed state."""
     status = result['status']
     recovery = context.get('state', {}).get('recovery', {})
     assertion = recovery.get('assertion', {})
@@ -474,10 +483,18 @@ def state_artifact(context, controller, result):
     if result.get('error'):
         phase = (assertion.get('result', {}).get('phase') or recovery.get('phase') or
                  context.get('phase') or context.get('prior_status') or controller.workflow.initial)
-    debug = ROOT / 'DEBUG.md'
-    chart = re.search(r'```mermaid\s*\n(.*?)```', debug.read_text(), re.S) if debug.exists() else None
-    diagram = chart[1].rstrip() if chart else ''
-    if diagram and phase in controller.workflow.states:
+    states = controller.workflow.states
+    diagram = 'flowchart TD\n' + '\n'.join(
+        f'{name}["{name}"]' for name in states)
+    edges = {(state.name, option.name): option.target for state in states.values()
+             if not callable(state.options) for option in state.options}
+    source = context.get('prior_status')
+    if source in states and phase in states and context['argv'] and (
+            result.get('accepted') or assertion.get('boundary') == 'after'):
+        edges[source, context['argv'][0]] = phase
+    diagram += '\n' + '\n'.join(f'{source} -->|{option}| {target}'
+                                for (source, option), target in edges.items())
+    if phase in states:
         color = '#fee2e2' if result.get('error') else '#dcfce7'
         diagram += f'\nclassDef current fill:{color},stroke:#2563eb,stroke-width:3px\nclass {phase} current\n'
     rows = ''.join('<tr' + (' class="current"' if state.name == phase else '') + '><td>' + escape(state.name)
@@ -498,12 +515,14 @@ def publish_artifacts(context, controller, result):
     if not controller or not all(os.environ.get(key) for key in
             ('MULTICA_SERVER_URL', 'MULTICA_TOKEN', 'MULTICA_TASK_ID', 'MULTICA_ISSUE_ID', 'MULTICA_WORKSPACE_ID')):
         return
-    if not (result.get('state_changed') or result.get('error') or
+    shifted = result.get('state_changed') or result.get('finished')
+    if not (shifted or result.get('error') or
             result.get('accepted') and context['argv'] and context['argv'][0] != 'init'):
         return
-    # A preview failure must never repeat a completed workflow action.
     try:
-        upload_artifact(controller.SOP_NAME + '-state.html', state_artifact(context, controller, result))
+        # In DEBUG mode, update the controller workflow's state chart artifact on every state shift.
+        if controller.DEBUG and shifted:
+            upload_artifact(controller.SOP_NAME + '-state.html', state_artifact(context, controller, result))
         if not result.get('error') and hasattr(controller, 'artifacts'):
             for filename, content in controller.artifacts({**context, 'cli': multica, 'error': SOPError}).items():
                 upload_artifact(filename, content)
