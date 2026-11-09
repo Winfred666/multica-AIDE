@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -485,6 +486,17 @@ def upload_artifact(filename, content):
         print(redact('Live artifact update failed: ' + str(error)), file=sys.stderr)
 
 
+def graph_svg(source, identifier):
+    dot = shutil.which('dot')
+    if not dot:
+        raise FileNotFoundError('Install Graphviz and put dot on PATH to compile the SOP preview.')
+    result = subprocess.run([dot, '-Tsvg', '-Gid=' + identifier], input=source, text=True,
+                            capture_output=True, timeout=30)
+    if result.returncode:
+        raise ValueError('Invalid DOT diagram: ' + result.stderr.strip())
+    return result.stdout[result.stdout.index('<svg'):]
+
+
 def state_artifact(context, controller, result):
     """Render the controller's workflow and highlight the current or failed state."""
     status = result['status']
@@ -495,11 +507,13 @@ def state_artifact(context, controller, result):
         phase = (assertion.get('result', {}).get('phase') or recovery.get('phase') or
                  context.get('phase') or context.get('prior_status') or controller.workflow.initial)
     states = controller.workflow.states
-    diagram = 'flowchart LR\n' + '\n'.join(
-        f'{name}["{name}"]' for name in states)
+    quote = json.dumps
+    diagram = 'digraph workflow {\nrankdir=LR; bgcolor="transparent";\n'
+    diagram += 'node [shape=box, fontname="Helvetica"]; edge [fontname="Helvetica"];\n'
+    diagram += '\n'.join(f'{quote(name)} [id={quote("state_" + name)}];' for name in states)
     for branch in controller.workflow.branches.values():
-        diagram += f'\n{branch.name}{{"{branch.description}"}}'
-        diagram += '\n' + '\n'.join(f'{branch.name} -->|{label}| {target}'
+        diagram += f'\n{quote(branch.name)} [shape=diamond, label={quote(branch.description)}];'
+        diagram += '\n' + '\n'.join(f'{quote(branch.name)} -> {quote(target)} [label={quote(label)}];'
                                      for label, target in branch.routes.items())
     edges = {(state.name, option.name): option.target for state in states.values()
              if not callable(state.options) for option in state.options}
@@ -508,16 +522,24 @@ def state_artifact(context, controller, result):
     logic = dict(context.get('state', {}).get('option_diagrams', {}))
     for state in states.values():
         if not callable(state.options):
-            logic.setdefault(state.name, {option.name: option.diagram() for option in state.options})
-    diagram += '\n' + '\n'.join(f'{source} __option_{index}@-->|{option}| {target}'
+            logic[state.name] = {option.name: option.diagram() for option in state.options}
+    # Cached diagrams from the previous syntax are display data, not workflow state.
+    logic = {state: {name: graph_svg(source, f'logic_{state}_{name}')
+                     for name, source in charts.items()
+                     if re.match(r'\s*(?:strict\s+)?(?:di)?graph\b', source)}
+             for state, charts in logic.items()}
+    diagram += '\n' + '\n'.join(f'{quote(source)} -> {quote(target)} [id="option_{index}", label={quote(option)}];'
                                 for index, ((source, option), target) in enumerate(edges.items()))
     # Boundary markers are diagram-only; they never introduce workflow options.
-    boundaries = [f'__start@{{ shape: sm-circ }} --> {controller.workflow.initial}']
-    boundaries.extend(f'{state.name} --> __end@{{ shape: fr-circ }}' for state in states.values() if state.final)
+    boundaries = ['__start [shape=point, label=""];',
+                  '__end [shape=doublecircle, label="", style=filled, fillcolor=black, width=0.2, fixedsize=true];',
+                  f'__start -> {quote(controller.workflow.initial)};']
+    boundaries.extend(f'{quote(state.name)} -> __end;' for state in states.values() if state.final)
     diagram += '\n' + '\n'.join(boundaries)
     if phase in states:
         color = '#fee2e2' if result.get('error') else '#dcfce7'
-        diagram += f'\nclassDef current fill:{color},stroke:#2563eb,stroke-width:3px\nclass {phase} current\n'
+        diagram += f'\n{quote(phase)} [style=filled, fillcolor="{color}", color="#2563eb", penwidth=3];\n'
+    diagram += '\n}'
     details = {'issue_id': os.environ['MULTICA_ISSUE_ID'], 'task_id': context['task_id'], 'status': status}
     if result.get('error'):
         details.update(failed_state=phase, boundary=assertion.get('boundary'), error=result['error'])
@@ -534,7 +556,7 @@ def state_artifact(context, controller, result):
                                      'next_step': {**callback(state.description), 'alternatives': choices}})
     if context.get('output'):
         nodes[phase] = context['output']
-    links = {f'__option_{index}': {
+    links = {f'option_{index}': {
         'decision': next((option for option in nodes[source]['next_step']
                           if shlex.split(option['command'])[2] == name), None),
         'logic': {name: logic.get(source, {}).get(name, '')}}
@@ -543,33 +565,29 @@ def state_artifact(context, controller, result):
     return ('<!doctype html><html lang="en"><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1"><title>' + escape(controller.SOP_NAME) + '</title>'
             '<style>body{font:15px system-ui;margin:8px;color:#172033}pre{white-space:pre;overflow-x:auto}'
-            '.mermaid{margin:0;max-width:100%;overflow-x:auto}.mermaid svg{display:block;max-width:none;margin:0}'
-            '@media(orientation:landscape){.mermaid{overflow-x:hidden}.mermaid svg{max-width:100%;height:auto}}'
-            '[role="button"]{cursor:pointer}.flowchart-link{pointer-events:stroke}'
+            '.diagram{margin:0;max-width:100%;overflow-x:auto}.diagram svg{display:block;max-width:none;margin:0}'
+            '@media(orientation:landscape){.diagram{overflow-x:hidden}.diagram svg{max-width:100%;height:auto}}'
+            '[role="button"]{cursor:pointer}.edge path{pointer-events:stroke}'
             'h1{font-size:18px}</style>'
-            '<pre class="mermaid" id="workflow">' + escape(diagram) + '</pre>'
+            '<div class="diagram" id="workflow">' + graph_svg(diagram, 'workflow_graph') + '</div>'
             '<h1>' + escape(controller.SOP_NAME) + '</h1><pre id="detail" aria-live="polite">'
             + escape(json.dumps(redact(nodes[phase]), indent=2)) + '</pre>'
             '<div id="logic"></div>'
             '<pre id="metadata">' + escape(json.dumps(redact(details), indent=2)) + '</pre>'
             '<script id="sop-data" type="application/json">' + payload + '</script>'
-            '<script src="https://cdn.jsdelivr.net/npm/mermaid@11.17.2/dist/mermaid.min.js"></script>'
-            '<script type="module">const mermaid=window.mermaid;'
+            '<script>'
             'const data=JSON.parse(document.getElementById("sop-data").textContent),detail=document.getElementById("detail"),logic=document.getElementById("logic");'
             'const show=(value,charts={})=>{detail.textContent=JSON.stringify(value,null,2);logic.replaceChildren();'
-            'for(const [name,source] of Object.entries(charts)){if(!source)continue;'
-            'const heading=document.createElement("h2"),chart=document.createElement("pre");'
-            'heading.textContent=name;chart.className="mermaid";chart.textContent=source;logic.append(heading,chart)}'
-            'mermaid.run({nodes:logic.querySelectorAll(".mermaid")})};'
-            'mermaid.initialize({startOnLoad:false,securityLevel:"strict",flowchart:{useMaxWidth:false}});await mermaid.run({querySelector:".mermaid"});'
+            'for(const [name,svg] of Object.entries(charts)){if(!svg)continue;'
+            'const heading=document.createElement("h2"),chart=document.createElement("div");'
+            'heading.textContent=name;chart.className="diagram";chart.innerHTML=svg;logic.append(heading,chart)}};'
             'const bind=(element,value,charts={})=>{if(!element||!value)return;element.setAttribute("tabindex","0");element.setAttribute("role","button");'
             'element.onclick=()=>show(value,charts);element.onkeydown=event=>{if(event.key==="Enter"||event.key===" "){'
             'event.preventDefault();show(value,charts)}}};'
             'for(const [name,value] of Object.entries(data.nodes)){'
-            'const node=document.querySelector(`#workflow .node[id*="flowchart-${name}-"]`);bind(node,value,data.logic[name])}'
+            'const node=document.getElementById(`state_${name}`);bind(node,value,data.logic[name])}'
             'for(const [id,edge] of Object.entries(data.edges)){'
-            'bind(document.querySelector(`#workflow .edgePaths [data-id="${id}"]`),edge.decision,edge.logic);'
-            'bind(document.querySelector(`#workflow .edgeLabel [data-id="${id}"]`)?.parentElement,edge.decision,edge.logic)}'
+            'bind(document.getElementById(id),edge.decision,edge.logic)}'
             'show(data.decision,data.logic[data.decision.status]);'
             '</script></html>')
 

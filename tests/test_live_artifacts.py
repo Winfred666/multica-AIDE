@@ -3,6 +3,7 @@ import contextlib
 from email.parser import BytesParser
 from email.policy import default
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from html import unescape
 import importlib.util
 import io
 import json
@@ -12,6 +13,7 @@ import shutil
 import tempfile
 import threading
 import unittest
+import xml.etree.ElementTree as ET
 from unittest.mock import Mock, patch
 
 
@@ -105,25 +107,32 @@ workflow = Workflow(
     def state_html(self):
         return self.rows[('issue-one', 'multica-example-state.html', 'text/html')]['html']
 
+    def assert_current(self, name):
+        svg = self.state_html().split('<div class="diagram" id="workflow">', 1)[1].split('</div>', 1)[0]
+        graph = ET.fromstring(svg)
+        box = graph.find(f".//*[@id='state_{name}']/{{http://www.w3.org/2000/svg}}polygon")
+        self.assertEqual(box.get('fill'), '#dcfce7')
+        self.assertEqual(box.get('stroke-width'), '3')
+
     def test_transitions_replace_live_files_and_preserve_native_identity(self):
         self.assertEqual(self.call()[1]['status'], 'idea')
         self.assertIn('task-one', self.state_html())
         self.assertIn('Develop a measured idea.', self.state_html())
-        self.assertIn('idea __option_0@--&gt;|test| test_result', self.state_html())
+        self.assertIn('idea->test_result', unescape(self.state_html()))
         requests = len(self.requests)
         self.call()
         self.call('--help')
         self.call('--validate')
         self.assertEqual(len(self.requests), requests)
         self.assertEqual(self.call('test')[1]['status'], 'review')
-        self.assertIn('class review current', self.state_html())
+        self.assert_current('review')
         self.assertIn('score=0.25', self.rows[('issue-one', 'tree.html', 'text/html')]['html'])
         requests = len(self.requests)
         self.call('refresh')
         self.assertEqual(len(self.requests), requests + 1)  # Existing view only; no state shift.
         self.assertEqual(self.call('finish')[1]['status'], 'finished')
         self.assertFalse((self.root / '.state/task-one.json').exists())
-        self.assertIn('class finished current', self.state_html())
+        self.assert_current('finished')
         with patch.dict(os.environ, {'MULTICA_TASK_ID': 'task-two'}):
             self.call()
         self.assertEqual(len(self.rows), 2)
@@ -160,23 +169,23 @@ workflow = Workflow(
         self.call()
         (self.root / 'skip-review').touch()
         self.assertEqual(self.call('test')[1]['status'], 'finished')
-        self.assertIn('idea __option_0@--&gt;|test| test_result', self.state_html())
-        self.assertIn('test_result --&gt;|review required| review', self.state_html())
-        self.assertIn('test_result --&gt;|goal met| finished', self.state_html())
+        self.assertIn('idea->test_result', unescape(self.state_html()))
+        self.assertIn('test_result->review', unescape(self.state_html()))
+        self.assertIn('test_result->finished', unescape(self.state_html()))
 
     def test_chart_shows_a_failed_scripted_target_and_completion_on_entry(self):
         self.call()
         (self.root / 'skip-review').touch()
         (self.root / 'fail').touch()
         self.assertEqual(self.call('test')[1]['status'], 'error')
-        self.assertIn('test_result --&gt;|goal met| finished', self.state_html())
+        self.assertIn('test_result->finished', unescape(self.state_html()))
         (self.root / 'fail').unlink()
         self.assertEqual(self.call('repaired')[1]['status'], 'finished')
         (self.root / 'already-finished').touch()
         with patch.dict(os.environ, {'MULTICA_TASK_ID': 'task-two'}):
             self.assertEqual(self.call()[1]['status'], 'finished')
         self.assertIn('task-two', self.state_html())
-        self.assertIn('class finished current', self.state_html())
+        self.assert_current('finished')
 
     def test_upload_failure_preserves_action_result_and_task_record(self):
         self.call()
@@ -187,6 +196,24 @@ workflow = Workflow(
         self.assertEqual(result['status'], 'review')
         self.assertEqual(json.loads((self.root / '.state/task-one.json').read_text())['status'], 'review')
         self.assertIn('Live artifact update failed: offline', errors.getvalue())
+
+    def test_graphviz_failures_preserve_action_results_and_task_records(self):
+        compile_graph = runtime.graph_svg
+        cases = [
+            ('missing', patch.object(runtime.shutil, 'which', return_value=None), 'Install Graphviz'),
+            ('invalid', patch.object(runtime, 'graph_svg', side_effect=lambda source, identifier:
+                compile_graph('digraph { broken -> }', identifier)), 'Invalid DOT diagram')]
+        for name, failure, message in cases:
+            with self.subTest(name=name), patch.dict(os.environ, {'MULTICA_TASK_ID': 'graphviz-' + name}):
+                self.call()
+                errors = io.StringIO()
+                with failure, contextlib.redirect_stderr(errors):
+                    code, result = self.call('test')
+                self.assertEqual(code, 0)
+                self.assertEqual(result['status'], 'review')
+                record = self.root / '.state' / ('graphviz-' + name + '.json')
+                self.assertEqual(json.loads(record.read_text())['status'], 'review')
+                self.assertIn(message, errors.getvalue())
 
     def test_foreground_controller_delivers_the_final_tree_before_returning(self):
         from multica_aide import standalone

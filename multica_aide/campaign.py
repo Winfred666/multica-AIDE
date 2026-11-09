@@ -138,11 +138,17 @@ def prepare_candidate(args, context):
 
 
 def describe(args, context):
-    """```mermaid
-    flowchart LR
-        describe_check{"One paragraph and valid candidate?"} -->|no| describe_reject[Reject with correction guidance]
-        describe_check -->|yes| describe_save[Checkpoint commit and register description]
-        describe_save --> describe_test[Launch official test in background]
+    """```dot
+    digraph describe {
+        rankdir=LR; node [shape=box];
+        describe_check [label="One paragraph and valid candidate?", shape=diamond];
+        describe_reject [label="Reject with correction guidance", shape=box];
+        describe_save [label="Checkpoint commit and register description", shape=box];
+        describe_test [label="Launch official test in background", shape=box];
+        describe_check -> describe_reject [label="no"];
+        describe_check -> describe_save [label="yes"];
+        describe_save -> describe_test;
+    }
     ```"""
     try:
         description = paragraph(args.description)
@@ -168,13 +174,20 @@ def describe(args, context):
 
 
 def record(args, context):
-    """```mermaid
-    flowchart LR
-        record_review{"One review paragraph?"} -->|no| record_reject[Reject with correction guidance]
-        record_review -->|yes| record_write[Save test review]
-        record_write --> record_check[For a recorded delivery, validate JSON, score, format and tested commit]
-        record_check -->|invalid| record_reject
-        record_check -->|valid or unscored| record_save[Register score when scorable and return result]
+    """```dot
+    digraph record {
+        rankdir=LR; node [shape=box];
+        record_review [label="One review paragraph?", shape=diamond];
+        record_reject [label="Reject with correction guidance", shape=box];
+        record_write [label="Save test review", shape=box];
+        record_check [label="For a recorded delivery, validate JSON, score, format and tested commit", shape=box];
+        record_save [label="Register score when scorable and return result", shape=box];
+        record_review -> record_reject [label="no"];
+        record_review -> record_write [label="yes"];
+        record_write -> record_check;
+        record_check -> record_reject [label="invalid"];
+        record_check -> record_save [label="valid or unscored"];
+    }
     ```"""
     try:
         review = paragraph(args.review)
@@ -267,13 +280,21 @@ def delegate(args, context):
 
 
 def development(args, context):
-    """```mermaid
-    flowchart LR
-        development_child[Read child status and task cleanup] --> development_ready{"Delivery ready and runs stopped?"}
-        development_ready -->|no| development_wait[Return pending or blocked evidence]
-        development_ready -->|yes| development_valid{"Valid candidate format?"}
-        development_valid -->|no| development_reject[Request correction]
-        development_valid -->|yes| development_test[Accept child and describe candidate for testing]
+    """```dot
+    digraph development {
+        rankdir=LR; node [shape=box];
+        development_child [label="Read child status and task cleanup", shape=box];
+        development_ready [label="Delivery ready and runs stopped?", shape=diamond];
+        development_wait [label="Return pending or blocked evidence", shape=box];
+        development_valid [label="Valid candidate format?", shape=diamond];
+        development_reject [label="Request correction", shape=box];
+        development_test [label="Accept child and describe candidate for testing", shape=box];
+        development_child -> development_ready;
+        development_ready -> development_wait [label="no"];
+        development_ready -> development_valid [label="yes"];
+        development_valid -> development_reject [label="no"];
+        development_valid -> development_test [label="yes"];
+    }
     ```"""
     issue, workdir, progress, config = client(context)
     api = API()
@@ -311,13 +332,20 @@ def run_test(args, context):
 
 
 def monitor_test(args, context):
-    """```mermaid
-    flowchart LR
-        monitor_test_wait[Wait for exit, important log or checkpoint] --> monitor_test_cursor[Save log cursor]
-        monitor_test_cursor --> monitor_test_exit{"Successful test exit?"}
-        monitor_test_exit -->|yes| monitor_test_delivery[Parse delivery and validate finite score and boolean exit condition]
-        monitor_test_exit -->|no| monitor_test_save[Save progress and new logs]
-        monitor_test_delivery --> monitor_test_save
+    """```dot
+    digraph monitor_test {
+        rankdir=LR; node [shape=box];
+        monitor_test_wait [label="Wait for exit, important log or checkpoint", shape=box];
+        monitor_test_cursor [label="Save log cursor", shape=box];
+        monitor_test_exit [label="Successful test exit?", shape=diamond];
+        monitor_test_delivery [label="Parse delivery and validate finite score and boolean exit condition", shape=box];
+        monitor_test_save [label="Save progress and new logs", shape=box];
+        monitor_test_wait -> monitor_test_cursor;
+        monitor_test_cursor -> monitor_test_exit;
+        monitor_test_exit -> monitor_test_delivery [label="yes"];
+        monitor_test_exit -> monitor_test_save [label="no"];
+        monitor_test_delivery -> monitor_test_save;
+    }
     ```"""
     issue, workdir, progress, config = client(context)
     report = monitor.wait(progress['test_job'], context['state'].setdefault('monitor', {}))
@@ -349,12 +377,19 @@ def installer_config():
 
 
 def prepare_install(args, context):
-    """```mermaid
-    flowchart LR
-        prepare_install_load[Load local settings] --> prepare_install_check[Check benchmark resources and contract]
-        prepare_install_check --> prepare_install_ready{"Ready?"}
-        prepare_install_ready -->|no| prepare_install_reject[Return missing prerequisites]
-        prepare_install_ready -->|yes| prepare_install_save[Save settings path and display configuration]
+    """```dot
+    digraph prepare_install {
+        rankdir=LR; node [shape=box];
+        prepare_install_load [label="Load local settings", shape=box];
+        prepare_install_check [label="Check benchmark resources and contract", shape=box];
+        prepare_install_ready [label="Ready?", shape=diamond];
+        prepare_install_reject [label="Return missing prerequisites", shape=box];
+        prepare_install_save [label="Save settings path and display configuration", shape=box];
+        prepare_install_load -> prepare_install_check;
+        prepare_install_check -> prepare_install_ready;
+        prepare_install_ready -> prepare_install_reject [label="no"];
+        prepare_install_ready -> prepare_install_save [label="yes"];
+    }
     ```"""
     config = load_config(args.settings)
     result = install(config, context['issue_id'])
@@ -365,14 +400,23 @@ def prepare_install(args, context):
 
 
 def confirm_install(args, context):
-    """```mermaid
-    flowchart LR
-        confirm_install_check[Recheck configuration and saved installation] --> confirm_install_existing{"Matching saved installation?"}
-        confirm_install_existing -->|yes| confirm_install_reuse[Reuse installed clients]
-        confirm_install_existing -->|no saved installation| confirm_install_template[Commit prepared template and local CLI skill]
-        confirm_install_template --> confirm_install_agents[Resolve named agents and warn before creation]
-        confirm_install_agents --> confirm_install_clients[Create client worktrees and persistent developer children]
-        confirm_install_clients --> confirm_install_save[Save installation and shared tree bindings]
+    """```dot
+    digraph confirm_install {
+        rankdir=LR; node [shape=box];
+        confirm_install_check [label="Recheck configuration and saved installation", shape=box];
+        confirm_install_existing [label="Matching saved installation?", shape=diamond];
+        confirm_install_reuse [label="Reuse installed clients", shape=box];
+        confirm_install_template [label="Commit prepared template and local CLI skill", shape=box];
+        confirm_install_agents [label="Resolve named agents and warn before creation", shape=box];
+        confirm_install_clients [label="Create client worktrees and persistent developer children", shape=box];
+        confirm_install_save [label="Save installation and shared tree bindings", shape=box];
+        confirm_install_check -> confirm_install_existing;
+        confirm_install_existing -> confirm_install_reuse [label="yes"];
+        confirm_install_existing -> confirm_install_template [label="no saved installation"];
+        confirm_install_template -> confirm_install_agents;
+        confirm_install_agents -> confirm_install_clients;
+        confirm_install_clients -> confirm_install_save;
+    }
     ```"""
     return {'data': install(installer_config(), context['issue_id'], confirm=True)}
 

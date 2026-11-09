@@ -37,10 +37,15 @@ def initialize(context):
 
 
 def enter(args, context):
-    """```mermaid
-    flowchart LR
-        enter_read[Read integrity observation and saved progress] --> enter_action[Apply setup block or candidate preparation when required]
-        enter_action --> enter_return[Return action result and selected phase]
+    """```dot
+    digraph enter {
+        rankdir=LR; node [shape=box];
+        enter_read [label="Read integrity observation and saved progress", shape=box];
+        enter_action [label="Apply setup block or candidate preparation when required", shape=box];
+        enter_return [label="Return action result and selected phase", shape=box];
+        enter_read -> enter_action;
+        enter_action -> enter_return;
+    }
     ```"""
     observed = context['initial']
     target = observed['route']
@@ -67,10 +72,15 @@ def phase_check(context):
 
 
 def advance(args, context):
-    """```mermaid
-    flowchart LR
-        advance_read[Read measured completion] --> advance_action[Finish client progress or prepare next candidate]
-        advance_action --> advance_return[Return action result and selected phase]
+    """```dot
+    digraph advance {
+        rankdir=LR; node [shape=box];
+        advance_read [label="Read measured completion", shape=box];
+        advance_action [label="Finish client progress or prepare next candidate", shape=box];
+        advance_return [label="Return action result and selected phase", shape=box];
+        advance_read -> advance_action;
+        advance_action -> advance_return;
+    }
     ```"""
     issue, workdir, progress, config = campaign.client(context)
     complete = completed_node(config)

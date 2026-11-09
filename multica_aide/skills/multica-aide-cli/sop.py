@@ -31,7 +31,7 @@ class Option:
 
     def diagram(self):
         doc = inspect.getdoc(self.action) if self.action else ''
-        match = re.search(r'```mermaid\s*\n((?:flowchart|graph) [A-Z]+\n.*?)```', doc or '', re.S)
+        match = re.search(r'```dot\s*\n(.*?)```', doc or '', re.S)
         return match.group(1).strip() if match else ''
 
 
