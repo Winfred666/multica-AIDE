@@ -110,9 +110,9 @@ workflow = Workflow(
     def assert_current(self, name):
         svg = self.state_html().split('<div class="diagram" id="workflow">', 1)[1].split('</div>', 1)[0]
         graph = ET.fromstring(svg)
-        box = graph.find(f".//*[@id='state_{name}']/{{http://www.w3.org/2000/svg}}polygon")
+        box = graph.find(f".//*[@id='state_{name}']/{{http://www.w3.org/2000/svg}}path")
         self.assertEqual(box.get('fill'), '#dcfce7')
-        self.assertEqual(box.get('stroke-width'), '3')
+        self.assertEqual(box.get('stroke-width'), '2')
 
     def test_transitions_replace_live_files_and_preserve_native_identity(self):
         self.assertEqual(self.call()[1]['status'], 'idea')

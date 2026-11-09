@@ -15,6 +15,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import textwrap
 import traceback
 import uuid
 from types import SimpleNamespace
@@ -490,11 +491,17 @@ def graph_svg(source, identifier):
     dot = shutil.which('dot')
     if not dot:
         raise FileNotFoundError('Install Graphviz and put dot on PATH to compile the SOP preview.')
-    result = subprocess.run([dot, '-Tsvg', '-Gid=' + identifier], input=source, text=True,
+    result = subprocess.run([dot, '-Tsvg', '-Gid=' + identifier, '-Gpad=0.2',
+                             '-Gnodesep=0.35', '-Granksep=0.45',
+                             '-Nfontname=Helvetica', '-Nfontsize=14', '-Nstyle=rounded,filled',
+                             '-Nfillcolor=#eef2ff', '-Ncolor=#94a3b8', '-Nfontcolor=#172033',
+                             '-Nmargin=0.16,0.1', '-Efontname=Helvetica', '-Efontsize=12',
+                             '-Ecolor=#64748b', '-Efontcolor=#475569', '-Earrowsize=0.7'], input=source, text=True,
                             capture_output=True, timeout=30)
     if result.returncode:
         raise ValueError('Invalid DOT diagram: ' + result.stderr.strip())
-    return result.stdout[result.stdout.index('<svg'):]
+    svg = re.sub(r'<!--.*?-->', '', result.stdout[result.stdout.index('<svg'):], flags=re.S)
+    return re.sub(r'>\s+<', '><', svg).strip()
 
 
 def state_artifact(context, controller, result):
@@ -507,13 +514,15 @@ def state_artifact(context, controller, result):
         phase = (assertion.get('result', {}).get('phase') or recovery.get('phase') or
                  context.get('phase') or context.get('prior_status') or controller.workflow.initial)
     states = controller.workflow.states
+    order = {node.name: index for index, node in enumerate(controller.workflow.nodes)}
     quote = json.dumps
-    diagram = 'digraph workflow {\nrankdir=LR; bgcolor="transparent";\n'
+    diagram = 'digraph workflow {\nrankdir=TB; bgcolor="transparent";\n'
     diagram += 'node [shape=box, fontname="Helvetica"]; edge [fontname="Helvetica"];\n'
     diagram += '\n'.join(f'{quote(name)} [id={quote("state_" + name)}];' for name in states)
     for branch in controller.workflow.branches.values():
-        diagram += f'\n{quote(branch.name)} [shape=diamond, label={quote(branch.description)}];'
-        diagram += '\n' + '\n'.join(f'{quote(branch.name)} -> {quote(target)} [label={quote(label)}];'
+        label = textwrap.fill(branch.description, 18, break_long_words=False, break_on_hyphens=False)
+        diagram += f'\n{quote(branch.name)} [shape=diamond, style=filled, label={quote(label)}];'
+        diagram += '\n' + '\n'.join(f'{quote(branch.name)} -> {quote(target)} [label={quote(label)}, constraint={str(order[target] > order[branch.name]).lower()}];'
                                      for label, target in branch.routes.items())
     edges = {(state.name, option.name): option.target for state in states.values()
              if not callable(state.options) for option in state.options}
@@ -528,17 +537,18 @@ def state_artifact(context, controller, result):
                      for name, source in charts.items()
                      if re.match(r'\s*(?:strict\s+)?(?:di)?graph\b', source)}
              for state, charts in logic.items()}
-    diagram += '\n' + '\n'.join(f'{quote(source)} -> {quote(target)} [id="option_{index}", label={quote(option)}];'
+    # Keep declared forward flow ranked; return arrows must not stretch the main path.
+    diagram += '\n' + '\n'.join(f'{quote(source)} -> {quote(target)} [id="option_{index}", label={quote(option)}, constraint={str(order[target] > order[source]).lower()}];'
                                 for index, ((source, option), target) in enumerate(edges.items()))
     # Boundary markers are diagram-only; they never introduce workflow options.
-    boundaries = ['__start [shape=point, label=""];',
-                  '__end [shape=doublecircle, label="", style=filled, fillcolor=black, width=0.2, fixedsize=true];',
+    boundaries = ['__start [shape=point, label="", fillcolor=black, color=black];',
+                  '__end [shape=doublecircle, label="", style=filled, fillcolor=black, color=black, width=0.2, height=0.2, fixedsize=true];',
                   f'__start -> {quote(controller.workflow.initial)};']
     boundaries.extend(f'{quote(state.name)} -> __end;' for state in states.values() if state.final)
     diagram += '\n' + '\n'.join(boundaries)
     if phase in states:
         color = '#fee2e2' if result.get('error') else '#dcfce7'
-        diagram += f'\n{quote(phase)} [style=filled, fillcolor="{color}", color="#2563eb", penwidth=3];\n'
+        diagram += f'\n{quote(phase)} [style="rounded,filled", fillcolor="{color}", color="#2563eb", penwidth=2];\n'
     diagram += '\n}'
     details = {'issue_id': os.environ['MULTICA_ISSUE_ID'], 'task_id': context['task_id'], 'status': status}
     if result.get('error'):
@@ -559,35 +569,40 @@ def state_artifact(context, controller, result):
     links = {f'option_{index}': {
         'decision': next((option for option in nodes[source]['next_step']
                           if shlex.split(option['command'])[2] == name), None),
-        'logic': {name: logic.get(source, {}).get(name, '')}}
+        'source': source, 'option': name}
         for index, (source, name) in enumerate(edges)}
-    payload = json.dumps(redact({'nodes': nodes, 'edges': links, 'decision': nodes[phase], 'logic': logic})).replace('<', '\\u003c')
+    templates = ''.join(f'<template id="chart_{state}_{name}"><div class="diagram">{redact(svg)}</div></template>'
+                        for state, charts in logic.items() for name, svg in charts.items())
+    logic = {state: {name: f'chart_{state}_{name}' for name in charts} for state, charts in logic.items()}
+    payload = json.dumps(redact({'nodes': nodes, 'edges': links, 'decision': nodes[phase], 'logic': logic}),
+                         separators=(',', ':')).replace('<', '\\u003c')
     return ('<!doctype html><html lang="en"><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1"><title>' + escape(controller.SOP_NAME) + '</title>'
-            '<style>body{font:15px system-ui;margin:8px;color:#172033}pre{white-space:pre;overflow-x:auto}'
-            '.diagram{margin:0;max-width:100%;overflow-x:auto}.diagram svg{display:block;max-width:none;margin:0}'
+            '<style>body{font:15px system-ui;margin:16px;color:#172033}pre{white-space:pre;overflow-x:auto;background:#f8fafc;padding:12px;border-radius:8px}'
+            '.diagram{margin:0;max-width:100%;overflow-x:auto}.diagram svg{display:block;max-width:none;margin:auto}'
             '@media(orientation:landscape){.diagram{overflow-x:hidden}.diagram svg{max-width:100%;height:auto}}'
-            '[role="button"]{cursor:pointer}.edge path{pointer-events:stroke}'
+            '[role="button"]{cursor:pointer}[role="button"]:hover{filter:brightness(.92)}[role="button"]:focus-visible{outline:2px solid #2563eb;outline-offset:2px}.edge path{pointer-events:stroke}'
             'h1{font-size:18px}</style>'
             '<div class="diagram" id="workflow">' + graph_svg(diagram, 'workflow_graph') + '</div>'
             '<h1>' + escape(controller.SOP_NAME) + '</h1><pre id="detail" aria-live="polite">'
             + escape(json.dumps(redact(nodes[phase]), indent=2)) + '</pre>'
             '<div id="logic"></div>'
             '<pre id="metadata">' + escape(json.dumps(redact(details), indent=2)) + '</pre>'
+            + templates +
             '<script id="sop-data" type="application/json">' + payload + '</script>'
             '<script>'
             'const data=JSON.parse(document.getElementById("sop-data").textContent),detail=document.getElementById("detail"),logic=document.getElementById("logic");'
             'const show=(value,charts={})=>{detail.textContent=JSON.stringify(value,null,2);logic.replaceChildren();'
-            'for(const [name,svg] of Object.entries(charts)){if(!svg)continue;'
-            'const heading=document.createElement("h2"),chart=document.createElement("div");'
-            'heading.textContent=name;chart.className="diagram";chart.innerHTML=svg;logic.append(heading,chart)}};'
+            'for(const [name,id] of Object.entries(charts)){if(!id)continue;'
+            'const heading=document.createElement("h2");'
+            'heading.textContent=name;logic.append(heading,document.getElementById(id).content.cloneNode(true))}};'
             'const bind=(element,value,charts={})=>{if(!element||!value)return;element.setAttribute("tabindex","0");element.setAttribute("role","button");'
             'element.onclick=()=>show(value,charts);element.onkeydown=event=>{if(event.key==="Enter"||event.key===" "){'
             'event.preventDefault();show(value,charts)}}};'
             'for(const [name,value] of Object.entries(data.nodes)){'
             'const node=document.getElementById(`state_${name}`);bind(node,value,data.logic[name])}'
             'for(const [id,edge] of Object.entries(data.edges)){'
-            'bind(document.getElementById(id),edge.decision,edge.logic)}'
+            'bind(document.getElementById(id),edge.decision,{[edge.option]:data.logic[edge.source]?.[edge.option]})}'
             'show(data.decision,data.logic[data.decision.status]);'
             '</script></html>')
 

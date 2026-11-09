@@ -60,6 +60,7 @@ class Branch:
 
 class Workflow:
     def __init__(self, *nodes, params=()):
+        self.nodes = nodes
         self.states = {node.name: node for node in nodes if isinstance(node, State)}
         self.branches = {node.name: node for node in nodes if isinstance(node, Branch)}
         self.params = tuple(params)
