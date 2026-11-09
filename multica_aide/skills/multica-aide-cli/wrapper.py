@@ -45,6 +45,41 @@ class SOPError(Exception):
         self.code, self.hint = code, hint
 
 
+def ensure_command(name, package):
+    executable = shutil.which(name)
+    if executable:
+        return executable
+    hint = f'Resolve the installation error for {package}, then retry this SOP call.'
+    installers = (
+        ('apt-get', ['install', '-y', '--no-install-recommends']),
+        ('dnf', ['install', '-y']), ('yum', ['install', '-y']),
+        ('apk', ['add']), ('pacman', ['-S', '--noconfirm']),
+        ('brew', ['install']),
+        ('winget', ['install', '--exact', '--silent',
+                    '--accept-package-agreements', '--accept-source-agreements', '--id']),
+    )
+    for manager, arguments in installers:
+        installer = shutil.which(manager)
+        if not installer:
+            continue
+        target = {'graphviz': 'Graphviz.Graphviz'}.get(package, package) if manager == 'winget' else package
+        command = [installer, *arguments, target]
+        if manager not in ('brew', 'winget') and os.geteuid() != 0:
+            command = ['sudo', '-n', *command]
+        try:
+            result = subprocess.run(command, text=True, capture_output=True, timeout=300)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise SOPError('dependency_install_failed', f'Could not install {package}: {error}', hint) from error
+        if result.returncode:
+            raise SOPError('dependency_install_failed',
+                           f'Could not install {package}: {result.stderr.strip() or result.stdout.strip()}', hint)
+        executable = shutil.which(name)
+        if not executable:
+            raise SOPError('dependency_install_failed', f'Installed {package}, but {name} is unavailable on PATH.', hint)
+        return executable
+    raise SOPError('dependency_install_failed', f'Cannot install {package}: no supported package manager on PATH.', hint)
+
+
 class Parser(argparse.ArgumentParser):
     def error(self, message):
         raise SOPError("invalid_input", message, "Use --help for JSON command guidance; correct the input.")
@@ -487,11 +522,9 @@ def upload_artifact(filename, content):
 
 
 def graph_svg(source, identifier):
-    dot = shutil.which('dot')
-    if not dot:
-        raise FileNotFoundError('Install Graphviz and put dot on PATH to compile the SOP preview.')
+    dot = ensure_command('dot', 'graphviz')
     result = subprocess.run([dot, '-Tsvg', '-Gid=' + identifier,
-                             '-Nfontname=Helvetica', '-Nstyle=filled', '-Nmargin=0', '-Nheight=0.3',
+                             '-Nfontname=Helvetica', '-Nstyle=filled', '-Nmargin=0.2',
                              '-Nfillcolor=#eef2ff', '-Ncolor=#94a3b8',
                              '-Efontname=Helvetica', '-Efontsize=12', '-Ecolor=#64748b'], input=source, text=True,
                             capture_output=True, timeout=30)
@@ -514,8 +547,8 @@ def state_artifact(context, controller, result):
     diagram = 'digraph workflow {\nrankdir=LR; bgcolor="transparent";\nnode [shape=box];\n'
     diagram += '\n'.join(f'{quote(name)} [id={quote("state_" + name)}];' for name in states)
     for branch in controller.workflow.branches.values():
-        diagram += f'\n{quote(branch.name)} [shape=diamond, fixedsize=shape, width=1.6, height=0.3, fontsize=12, label={quote(branch.description)}];'
-        diagram += '\n' + '\n'.join(f'{quote(branch.name)} -> {quote(target)} [xlabel={quote(label)}];'
+        diagram += f'\n{quote(branch.name)} [shape=diamond, label={quote(branch.description)}];'
+        diagram += '\n' + '\n'.join(f'{quote(branch.name)} -> {quote(target)} [label={quote(label)}];'
                                      for label, target in branch.routes.items())
     edges = {(state.name, option.name): option.target for state in states.values()
              if not callable(state.options) for option in state.options}
@@ -530,7 +563,7 @@ def state_artifact(context, controller, result):
                      for name, source in charts.items()
                      if re.match(r'\s*(?:strict\s+)?(?:di)?graph\b', source)}
              for state, charts in logic.items()}
-    diagram += '\n' + '\n'.join(f'{quote(source)} -> {quote(target)} [id="option_{index}", xlabel={quote(option)}];'
+    diagram += '\n' + '\n'.join(f'{quote(source)} -> {quote(target)} [id="option_{index}", label={quote(option)}];'
                                 for index, ((source, option), target) in enumerate(edges.items()))
     # Boundary markers are diagram-only; they never introduce workflow options.
     boundaries = ['__start [shape=point, label="", fillcolor=black, color=black, width=0.05, height=0.05];',
@@ -677,4 +710,5 @@ def main(argv=None):
 
 
 if __name__ == "__main__":
+    sys.modules['wrapper'] = sys.modules[__name__]
     sys.exit(main())

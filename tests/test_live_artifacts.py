@@ -200,7 +200,7 @@ workflow = Workflow(
     def test_graphviz_failures_preserve_action_results_and_task_records(self):
         compile_graph = runtime.graph_svg
         cases = [
-            ('missing', patch.object(runtime.shutil, 'which', return_value=None), 'Install Graphviz'),
+            ('missing', patch.object(runtime.shutil, 'which', return_value=None), 'no supported package manager'),
             ('invalid', patch.object(runtime, 'graph_svg', side_effect=lambda source, identifier:
                 compile_graph('digraph { broken -> }', identifier)), 'Invalid DOT diagram')]
         for name, failure, message in cases:

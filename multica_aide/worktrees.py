@@ -3,6 +3,9 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
+
+from . import sop_runtime
 
 
 def git(directory, *args):
@@ -45,9 +48,8 @@ def hidden_paths(paths):
 
 def sandbox(policy, directory, argv):
     """Development commands see public files and may write only their solution and /tmp."""
-    bwrap = shutil.which('bwrap')
-    if not bwrap:
-        raise ValueError('Separate validation requires bubblewrap on the development runtime')
+    # Preserve the invoking standalone wrapper's exception type.
+    bwrap = sys.modules.get('wrapper', sop_runtime).ensure_command('bwrap', 'bubblewrap')
     directory = Path(directory).resolve()
     command = [bwrap, '--die-with-parent', '--unshare-user', '--uid', str(os.getuid()),
                '--gid', str(os.getgid()), '--unshare-pid', '--unshare-net', '--cap-drop', 'ALL',

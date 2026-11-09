@@ -442,6 +442,19 @@ class AgentAssignment(unittest.TestCase):
                             self.assertEqual(issues[int(child)]['parent_issue_id'], client['issue_id'])
                             self.assertIn(str(private), json.loads(properties['/api/issues/' + child + '/metadata/sandbox_policy'])['deny_paths'])
 
+    def test_bubblewrap_dependency_uses_invoking_wrapper(self):
+        with patch.dict(sys.modules, {'wrapper': sop_runtime}), \
+                patch.object(sop_runtime, 'ensure_command', return_value='/test/bwrap') as ensure:
+            command = sandbox({'deny_paths': []}, Path.cwd(), ['true'])
+            self.assertEqual(command[0], '/test/bwrap')
+            ensure.assert_called_once_with('bwrap', 'bubblewrap')
+        error = sop_runtime.SOPError('dependency_install_failed', 'Installation refused')
+        with patch.dict(sys.modules, {'wrapper': sop_runtime}), \
+                patch.object(sop_runtime, 'ensure_command', side_effect=error):
+            with self.assertRaises(sop_runtime.SOPError) as caught:
+                sandbox({'deny_paths': []}, Path.cwd(), ['true'])
+        self.assertEqual(caught.exception.code, 'dependency_install_failed')
+
     def test_bubblewrap_hides_private_validation_and_keeps_development_writable(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
