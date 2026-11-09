@@ -138,6 +138,12 @@ def prepare_candidate(args, context):
 
 
 def describe(args, context):
+    """```mermaid
+    flowchart LR
+        describe_check{"One paragraph and valid candidate?"} -->|no| describe_reject[Reject with correction guidance]
+        describe_check -->|yes| describe_save[Checkpoint commit and register description]
+        describe_save --> describe_test[Launch official test in background]
+    ```"""
     try:
         description = paragraph(args.description)
         issue, workdir, progress, config = client(context)
@@ -162,6 +168,14 @@ def describe(args, context):
 
 
 def record(args, context):
+    """```mermaid
+    flowchart LR
+        record_review{"One review paragraph?"} -->|no| record_reject[Reject with correction guidance]
+        record_review -->|yes| record_write[Save test review]
+        record_write --> record_check[For a recorded delivery, validate JSON, score, format and tested commit]
+        record_check -->|invalid| record_reject
+        record_check -->|valid or unscored| record_save[Register score when scorable and return result]
+    ```"""
     try:
         review = paragraph(args.review)
         issue, workdir, progress, config = client(context)
@@ -253,6 +267,14 @@ def delegate(args, context):
 
 
 def development(args, context):
+    """```mermaid
+    flowchart LR
+        development_child[Read child status and task cleanup] --> development_ready{"Delivery ready and runs stopped?"}
+        development_ready -->|no| development_wait[Return pending or blocked evidence]
+        development_ready -->|yes| development_valid{"Valid candidate format?"}
+        development_valid -->|no| development_reject[Request correction]
+        development_valid -->|yes| development_test[Accept child and describe candidate for testing]
+    ```"""
     issue, workdir, progress, config = client(context)
     api = API()
     child = api.request('GET', '/api/issues/' + progress['developer_issue_id'])
@@ -289,6 +311,14 @@ def run_test(args, context):
 
 
 def monitor_test(args, context):
+    """```mermaid
+    flowchart LR
+        monitor_test_wait[Wait for exit, important log or checkpoint] --> monitor_test_cursor[Save log cursor]
+        monitor_test_cursor --> monitor_test_exit{"Successful test exit?"}
+        monitor_test_exit -->|yes| monitor_test_delivery[Parse delivery and validate finite score and boolean exit condition]
+        monitor_test_exit -->|no| monitor_test_save[Save progress and new logs]
+        monitor_test_delivery --> monitor_test_save
+    ```"""
     issue, workdir, progress, config = client(context)
     report = monitor.wait(progress['test_job'], context['state'].setdefault('monitor', {}))
     sop_runtime.save_state(context, context['state'])
@@ -319,6 +349,13 @@ def installer_config():
 
 
 def prepare_install(args, context):
+    """```mermaid
+    flowchart LR
+        prepare_install_load[Load local settings] --> prepare_install_check[Check benchmark resources and contract]
+        prepare_install_check --> prepare_install_ready{"Ready?"}
+        prepare_install_ready -->|no| prepare_install_reject[Return missing prerequisites]
+        prepare_install_ready -->|yes| prepare_install_save[Save settings path and display configuration]
+    ```"""
     config = load_config(args.settings)
     result = install(config, context['issue_id'])
     if result['status'] != 'ready':
@@ -328,6 +365,15 @@ def prepare_install(args, context):
 
 
 def confirm_install(args, context):
+    """```mermaid
+    flowchart LR
+        confirm_install_check[Recheck configuration and saved installation] --> confirm_install_existing{"Matching saved installation?"}
+        confirm_install_existing -->|yes| confirm_install_reuse[Reuse installed clients]
+        confirm_install_existing -->|no saved installation| confirm_install_template[Commit prepared template and local CLI skill]
+        confirm_install_template --> confirm_install_agents[Resolve named agents and warn before creation]
+        confirm_install_agents --> confirm_install_clients[Create client worktrees and persistent developer children]
+        confirm_install_clients --> confirm_install_save[Save installation and shared tree bindings]
+    ```"""
     return {'data': install(installer_config(), context['issue_id'], confirm=True)}
 
 

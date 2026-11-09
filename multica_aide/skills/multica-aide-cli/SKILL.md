@@ -12,7 +12,8 @@ reviewed delivery is ready for validation. Keep scored worktrees unchanged. Stop
 Official tests use proactive keyword + time-trigger monitoring; follow the
 returned `continue`/`exception` recall in the same turn. Review the recorded test
 JSON; report an unscored failure through native Multica.
-See [DEBUG.md](DEBUG.md) for its states.
+
+Use `--help` to replay the last decision, or read entry guidance for a new run.
 
 In every state, follow returned error guidance and reconcile writes before
 retrying. Use `repaired` once for an assertion failure; report a repeated failure

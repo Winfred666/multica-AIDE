@@ -1,5 +1,7 @@
+import importlib.util
 import json
-from contextlib import chdir, redirect_stderr
+import os
+from contextlib import chdir, redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 import shutil
@@ -9,9 +11,13 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 import yaml
-from multica_aide import sop_runtime
 from multica_aide.standalone import SKILLS, configured_agent, evaluate, install, load_config, read, search, write
 from multica_aide.worktrees import add_worktree, checkpoint, git, prepare_template, sandbox
+
+
+spec = importlib.util.spec_from_file_location('client_wrapper', SKILLS / 'multica-aide-cli/wrapper.py')
+sop_runtime = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(sop_runtime)
 
 
 class ClientSOP(unittest.TestCase):
@@ -19,7 +25,7 @@ class ClientSOP(unittest.TestCase):
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
-        self.skill = self.root / 'skill'
+        self.skill = self.root / 'multica_aide/skills/multica-aide-cli'
         shutil.copytree(SKILLS / 'multica-aide-cli', self.skill)
         runtime_root = patch.object(sop_runtime, 'ROOT', self.skill)
         runtime_root.start()
@@ -51,6 +57,47 @@ class ClientSOP(unittest.TestCase):
         native = patch.object(sop_runtime, 'multica', self.cli)
         native.start()
         self.addCleanup(native.stop)
+
+    def test_help_replays_decisions_and_target_repair_preserves_candidate(self):
+        def call(*argv):
+            output = StringIO()
+            with redirect_stdout(output):
+                code = sop_runtime.main(list(argv))
+            return code, output.getvalue().strip()
+
+        env = {'MULTICA_TASK_ID': 'protocol-test', 'MULTICA_ISSUE_ID': self.issue['id'],
+               'MULTICA_WORKSPACE_ID': 'workspace'}
+        path = self.skill / '.state/protocol-test.json'
+        body = (self.skill / 'SKILL.md').read_text().split('---', 2)[2].strip()
+        with patch.dict(os.environ, env, clear=True), patch.object(sop_runtime, 'load_controller', return_value=self.controller):
+            self.assertEqual(call('--help'), (0, body))
+            self.assertFalse(path.exists())
+            initial = call()
+            saved, modified = path.read_bytes(), path.stat().st_mtime_ns
+            with patch.object(self.controller.workflow, 'before', side_effect=AssertionError('Help ran a precheck')):
+                self.assertEqual(call('--help'), initial)
+            self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), (saved, modified))
+            with patch.object(self.controller.workflow, 'after', side_effect=AssertionError('Repair candidate check')):
+                failed = call('enter')
+            self.assertEqual(json.loads(failed[1])['status'], 'error')
+            self.assertEqual(call('--help'), (0, failed[1]))
+            candidate = self.progress()['candidate']
+            with patch.object(self.controller.workflow, 'step', side_effect=AssertionError('Action repeated')):
+                repaired = call('repaired')
+                self.assertEqual(json.loads(repaired[1])['status'], 'idea', repaired[1])
+            self.assertEqual(self.progress()['candidate'], candidate)
+            self.solution(.2)
+            self.assertEqual(json.loads(call('test', '--description', 'A passing baseline.')[1])['status'], 'test')
+            self.assertEqual(json.loads(call('continue')[1])['status'], 'review')
+            delivery = self.progress()['test_result']['delivery']
+            self.assertEqual(json.loads(call('record', '--delivery', json.dumps(delivery), '--review', 'The goal is met.')[1])['status'], 'tested')
+            self.assertEqual(json.loads(call('continue')[1])['status'], 'finished')
+            self.assertFalse(path.exists())
+            self.assertEqual(call('--help'), (0, body))
+            self.assertFalse(path.exists())
+        self.assertEqual(self.controller.workflow.states['test'].options[0].target, 'test_result')
+        self.assertEqual(self.controller.workflow.branches['test_result'].routes, {'running': 'test', 'ended': 'review'})
+        self.assertEqual(self.controller.workflow.branches['record_result'].routes, {'yes': 'tested', 'no': 'test_failed'})
 
     def test_installer_runs_controller_in_the_calling_task(self):
         from multica_aide import campaign

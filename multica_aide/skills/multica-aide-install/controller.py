@@ -1,9 +1,26 @@
 """Prepare, confirm, install and start one native campaign."""
+import json
+import os
 from pathlib import Path
+import sys
+from urllib.request import Request, urlopen
+
+# Copied client skills locate their installed campaign module through the native issue.
+module = Path(__file__).resolve().parents[3]
+if not (module / 'multica_aide').is_dir():
+    request = Request(os.environ['MULTICA_SERVER_URL'].rstrip('/') + '/api/issues/' + os.environ['MULTICA_ISSUE_ID'],
+        headers={'Authorization': 'Bearer ' + os.environ['MULTICA_TOKEN'], 'X-Workspace-ID': os.environ['MULTICA_WORKSPACE_ID']})
+    with urlopen(request, timeout=30) as response:
+        module = Path(json.load(response)['metadata']['aide_checkout'])
+sys.path.insert(0, str(module))
 
 from sop import Option, Parameter, State, Workflow
-from multica_aide import campaign
+from multica_aide import campaign, sop_runtime
 from multica_aide.standalone import install
+
+
+# Campaign monitor checkpoints use the invoking standalone package's task record.
+sop_runtime.ROOT = Path(__file__).resolve().parent
 
 
 def settings(context):
