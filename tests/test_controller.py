@@ -26,6 +26,8 @@ class ControllerTest(unittest.TestCase):
         self.root = Path(temporary.name)
         shutil.copy(TEMPLATE / 'sop_runtime.py', self.root / 'wrapper.py')
         shutil.copy(TEMPLATE / 'sop.py', self.root / 'sop.py')
+        shutil.copy(TEMPLATE / 'monitor.py', self.root / 'monitor.py')
+        (self.root / 'config.json').write_text('{"DEBUG": false}')
         shutil.copy(Path(__file__).parent / 'fixtures/review_controller.py', self.root / 'controller.py')
         (self.root / 'SKILL.md').write_text('---\nname: review-child-work\ndescription: Review a child delivery.\n---\n')
         self.addCleanup(patch.stopall)
@@ -63,10 +65,13 @@ class ControllerTest(unittest.TestCase):
             return {"private": self.private, "full_name": os.environ["SYMBOLIC_SOP_ERROR_REPO"]}
         return {"number": 1, "html_url": "https://github.com/example/sop-debug/issues/1"}
 
-    def call(self, *argv):
+    def call(self, *argv, plain=False):
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             code = sop.main(list(argv))
+        if plain:
+            self.assertEqual(code, 0)
+            return output.getvalue().strip()
         lines = output.getvalue().splitlines()
         self.assertEqual(len(lines), 1)
         result = json.loads(lines[0])
@@ -76,7 +81,7 @@ class ControllerTest(unittest.TestCase):
             self.assertIsInstance(result['next_step'], list)
             for option in result['next_step']:
                 self.assertEqual(set(option), {'instruction', 'command'})
-        self.assertEqual(code, 0 if 'error' not in result else 1)
+        self.assertEqual(code, 0 if argv == ('--help',) or 'error' not in result else 1)
         return result
 
     def record_path(self, task=None):
@@ -85,6 +90,18 @@ class ControllerTest(unittest.TestCase):
     def state(self):
         path = self.record_path()
         return path.read_bytes() if path.exists() else b''
+
+
+    def assert_progress_unchanged(self, before):
+        # Emitted decisions are cached even when an option is rejected.
+        def progress(raw):
+            if not raw:
+                return {}
+            state = json.loads(raw)
+            for name in ('output', 'decisions', 'option_diagrams', 'option_targets'):
+                state.pop(name, None)
+            return state
+        self.assertEqual(progress(self.state()), progress(before))
 
 
     def test_reports_stay_local_until_destination_is_explicitly_configured(self):
@@ -105,7 +122,7 @@ class ControllerTest(unittest.TestCase):
         invalid = self.call('done')
         self.assertEqual(invalid['error']['code'], 'invalid_input')
         self.assertIn('--child', invalid['next_step'][0]['command'])
-        self.assertEqual(self.state(), before)
+        self.assert_progress_unchanged(before)
         resteered = self.call('resteer', '--child', 'child-one', '--prompt', 'Repair the failing check')
         self.assertEqual(resteered['status'], 'resteer')
         self.assertEqual(resteered['next_step'], [])
@@ -156,16 +173,17 @@ class ControllerTest(unittest.TestCase):
             with self.subTest(args=args):
                 failed = self.call(*args)
                 self.assertIn('error', failed)
-                self.assertEqual(self.state(), before)
+                self.assert_progress_unchanged(before)
         self.assertEqual(self.call('--validate'), {'status': 'valid'})
 
     def test_help_never_creates_or_changes_task_state(self):
-        for started in (False, True):
-            if started:
-                self.call()
-            before = self.state()
-            self.assertNotIn('error', self.call('--help'))
-            self.assertEqual(self.state(), before)
+        body = (self.root / 'SKILL.md').read_text().split('---', 2)[2].strip()
+        self.assertEqual(self.call('--help', plain=True), body)
+        self.assertEqual(self.state(), b'')
+        started = self.call()
+        before = self.state()
+        self.assertEqual(self.call('--help'), started)
+        self.assertEqual(self.state(), before)
 
     def test_quit_is_injected_reported_and_removes_the_task_record(self):
         started = self.call()
@@ -212,7 +230,7 @@ class ControllerTest(unittest.TestCase):
         before = self.state()
         failed = self.call('done', '--child', 'child-one')
         self.assertEqual(failed['error']['code'], 'invalid_transition')
-        self.assertEqual(self.state(), before)
+        self.assert_progress_unchanged(before)
         self.assertEqual(failed['instruction'], 'Inspect a child deliverable before accepting it or requesting a correction.')
         self.call()
         before = self.state()
@@ -220,7 +238,7 @@ class ControllerTest(unittest.TestCase):
         self.assertEqual(failed['error']['code'], 'invalid_transition')
         self.assertTrue(any('resteer' in choice['command'] for choice in failed['next_step']))
         self.assertIn('--child', failed['next_step'][0]['command'])
-        self.assertEqual(self.state(), before)
+        self.assert_progress_unchanged(before)
 
     def test_task_rows_are_isolated(self):
         first = self.call()["status"]
@@ -264,10 +282,10 @@ class ControllerTest(unittest.TestCase):
             before = self.state()
             with patch.object(controller.workflow, "step", return_value={"phase": "waiting", "instruction": "Wait."}):
                 self.assertIn('error', self.call())
-                self.assertEqual(self.state(), before)
+                self.assert_progress_unchanged(before)
             with patch.object(controller.workflow, "step", return_value={"phase": "finished", "accepted": False, "instruction": "Stop."}):
                 self.assertIn('error', self.call("done"))
-                self.assertEqual(self.state(), before)
+                self.assert_progress_unchanged(before)
 
     def test_simple_object_workflow_needs_no_separate_assertion_module(self):
         (self.root / 'controller.py').write_text(
@@ -291,7 +309,7 @@ class ControllerTest(unittest.TestCase):
                 self.assertEqual(self.call()['error']['code'], 'invalid_state')
                 self.assertEqual(self.state(), before)
 
-    def test_record_deletion_failure_preserves_prior_bytes_and_reports_the_write(self):
+    def test_record_deletion_failure_preserves_progress_and_reports_the_write(self):
         work = self.call()["status"]
         before = self.state()
         unlink = Path.unlink
@@ -306,7 +324,7 @@ class ControllerTest(unittest.TestCase):
         self.assertIn('error', result)
         self.assertIn("access", result["instruction"])
         self.assertEqual(shlex.split(result['next_step'][0]['command']), [sys.executable, str(self.root / "wrapper.py")])
-        self.assertEqual(self.state(), before)
+        self.assert_progress_unchanged(before)
         self.assertFalse(list(self.record_path().parent.glob(".task-one.json.*")))
 
     def test_task_record_preserves_additional_fields_on_resume(self):
@@ -322,8 +340,9 @@ class ControllerTest(unittest.TestCase):
         before = self.state()
         with patch.dict(os.environ, {"GH_TOKEN": "ghp_fixtureSecret", "MULTICA_TOKEN": "mat_fixtureSecret"}):
             result = self.call("--error", "permission denied: GH_TOKEN=ghp_fixtureSecret MULTICA_TOKEN=mat_fixtureSecret")
-        self.assertEqual(self.state(), before)
+        self.assert_progress_unchanged(before)
         self.assertIn("access", result["instruction"])
+        self.assertEqual(self.call('--help'), result)
         self.assertNotIn("rules", result["error"])
         report = json.loads(self.github_calls[-1][1]["body"].split("\n\n", 1)[1])
         self.assertEqual(report["task_id"], "task-one")
@@ -454,7 +473,10 @@ class ControllerTest(unittest.TestCase):
             result = json.loads(output)
             self.assertNotIn('error', result)
         self.assertEqual({p.stem for p in (self.root / '.state').glob('*.json')}, set(tasks))
-        self.assertTrue(all(json.loads(self.record_path(task).read_text()) == {'status': 'review'} for task in tasks))
+        for task in tasks:
+            state = json.loads(self.record_path(task).read_text())
+            self.assertEqual(state['status'], 'review')
+            self.assertEqual(state['output']['status'], 'review')
 
     def test_broken_controller_returns_debug_json_without_losing_state(self):
         self.call()
@@ -473,7 +495,7 @@ class ControllerTest(unittest.TestCase):
                 result = self.call("resteer", "--child", "child-one", "--prompt", "Correction")
                 self.assertIn('error', result)
                 self.assertEqual(result["error"]["code"], "invalid_child")
-                self.assertEqual(self.state(), before)
+                self.assert_progress_unchanged(before)
         self.assertFalse(any(command[0] in ("wakeup", "status") for command in self.cli_calls))
 
 

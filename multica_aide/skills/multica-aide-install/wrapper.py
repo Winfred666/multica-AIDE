@@ -544,6 +544,7 @@ def state_artifact(context, controller, result):
             '<meta name="viewport" content="width=device-width, initial-scale=1"><title>' + escape(controller.SOP_NAME) + '</title>'
             '<style>body{font:15px system-ui;margin:8px;color:#172033}pre{white-space:pre;overflow-x:auto}'
             '.mermaid{margin:0;max-width:100%;overflow-x:auto}.mermaid svg{display:block;max-width:none;margin:0}'
+            '@media(orientation:landscape){.mermaid{overflow-x:hidden}.mermaid svg{max-width:100%;height:auto}}'
             '[role="button"]{cursor:pointer}.flowchart-link{pointer-events:stroke}'
             'h1{font-size:18px}</style>'
             '<pre class="mermaid" id="workflow">' + escape(diagram) + '</pre>'

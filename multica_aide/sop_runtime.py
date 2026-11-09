@@ -70,13 +70,16 @@ def callback(instruction, args=None):
 
 
 def validate_package():
-    required = ('SKILL.md', 'wrapper.py', 'controller.py', 'sop.py')
+    required = ('SKILL.md', 'config.json', 'wrapper.py', 'controller.py', 'sop.py', 'monitor.py')
     for name in required:
         path = ROOT / name
         if not path.is_file() or not path.read_text().strip():
             raise ValueError('Incomplete symbolic SOP: ' + name)
         if name.endswith('.py'):
             compile(path.read_text(), str(path), 'exec')
+    config = json.loads((ROOT / 'config.json').read_text())
+    if not isinstance(config, dict) or not isinstance(config.get('DEBUG'), bool):
+        raise ValueError('config.json needs a boolean DEBUG')
     skill = (ROOT / 'SKILL.md').read_text()
     header = skill.split('---', 2)
     if len(header) != 3 or header[0].strip():
@@ -144,6 +147,14 @@ def save_state(context, state):
     path = state_path(context)
     path.parent.mkdir(parents=True, exist_ok=True)
     atomic_write(path, json.dumps(state, default=str, allow_nan=False))
+
+
+def help_output(context):
+    path = state_path(context)
+    if path.exists():
+        state = json.loads(path.read_text(encoding='utf-8'))
+        return json.dumps(redact(state.get('output', state)), allow_nan=False)
+    return (ROOT / 'SKILL.md').read_text(encoding='utf-8').split('---', 2)[2].strip()
 
 
 def assertion_before(workflow, context):
@@ -484,31 +495,82 @@ def state_artifact(context, controller, result):
         phase = (assertion.get('result', {}).get('phase') or recovery.get('phase') or
                  context.get('phase') or context.get('prior_status') or controller.workflow.initial)
     states = controller.workflow.states
-    diagram = 'flowchart TD\n' + '\n'.join(
+    diagram = 'flowchart LR\n' + '\n'.join(
         f'{name}["{name}"]' for name in states)
+    for branch in controller.workflow.branches.values():
+        diagram += f'\n{branch.name}{{"{branch.description}"}}'
+        diagram += '\n' + '\n'.join(f'{branch.name} -->|{label}| {target}'
+                                     for label, target in branch.routes.items())
     edges = {(state.name, option.name): option.target for state in states.values()
              if not callable(state.options) for option in state.options}
-    source = context.get('prior_status')
-    if source in states and phase in states and context['argv'] and (
-            result.get('accepted') or assertion.get('boundary') == 'after'):
-        edges[source, context['argv'][0]] = phase
-    diagram += '\n' + '\n'.join(f'{source} -->|{option}| {target}'
-                                for (source, option), target in edges.items())
+    for source, targets in context.get('state', {}).get('option_targets', {}).items():
+        edges.update({(source, name): target for name, target in targets.items()})
+    logic = dict(context.get('state', {}).get('option_diagrams', {}))
+    for state in states.values():
+        if not callable(state.options):
+            logic.setdefault(state.name, {option.name: option.diagram() for option in state.options})
+    diagram += '\n' + '\n'.join(f'{source} __option_{index}@-->|{option}| {target}'
+                                for index, ((source, option), target) in enumerate(edges.items()))
+    # Boundary markers are diagram-only; they never introduce workflow options.
+    boundaries = [f'__start@{{ shape: sm-circ }} --> {controller.workflow.initial}']
+    boundaries.extend(f'{state.name} --> __end@{{ shape: fr-circ }}' for state in states.values() if state.final)
+    diagram += '\n' + '\n'.join(boundaries)
     if phase in states:
         color = '#fee2e2' if result.get('error') else '#dcfce7'
         diagram += f'\nclassDef current fill:{color},stroke:#2563eb,stroke-width:3px\nclass {phase} current\n'
-    rows = ''.join('<tr' + (' class="current"' if state.name == phase else '') + '><td>' + escape(state.name)
-                   + '</td><td>' + escape(state.description) + '</td></tr>' for state in controller.workflow.states.values())
     details = {'issue_id': os.environ['MULTICA_ISSUE_ID'], 'task_id': context['task_id'], 'status': status}
     if result.get('error'):
         details.update(failed_state=phase, boundary=assertion.get('boundary'), error=result['error'])
-    return ('<!doctype html><html lang="en"><meta charset="utf-8"><title>' + escape(controller.SOP_NAME) + '</title>'
-            '<style>body{font:15px system-ui;margin:24px;color:#172033}table{border-collapse:collapse;width:100%}'
-            'td{padding:10px;border:1px solid #cbd5e1}.current{background:#e0ecff}pre{white-space:pre-wrap}</style>'
-            '<h1>' + escape(controller.SOP_NAME) + '</h1><pre>' + escape(json.dumps(redact(details), indent=2)) + '</pre>'
-            '<pre class="mermaid">' + escape(diagram) + '</pre><table>' + rows + '</table>'
+    nodes = {name: decision for name, decision in context.get('state', {}).get('decisions', {}).items()
+             if name in states}
+    for state in states.values():
+        if state.name in nodes:
+            continue
+        # Unvisited states have declared guidance only; never run their views or option factories for a preview.
+        choices = [callback(option.prompt, option.callback()) for option in state.options] if not callable(state.options) else []
+        if state.initial:
+            choices.append(callback('Stop this SOP.', ['quit']))
+        nodes[state.name] = response({'status': state.name,
+                                     'next_step': {**callback(state.description), 'alternatives': choices}})
+    if context.get('output'):
+        nodes[phase] = context['output']
+    links = {f'__option_{index}': {
+        'decision': next((option for option in nodes[source]['next_step']
+                          if shlex.split(option['command'])[2] == name), None),
+        'logic': {name: logic.get(source, {}).get(name, '')}}
+        for index, (source, name) in enumerate(edges)}
+    payload = json.dumps(redact({'nodes': nodes, 'edges': links, 'decision': nodes[phase], 'logic': logic})).replace('<', '\\u003c')
+    return ('<!doctype html><html lang="en"><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width, initial-scale=1"><title>' + escape(controller.SOP_NAME) + '</title>'
+            '<style>body{font:15px system-ui;margin:8px;color:#172033}pre{white-space:pre;overflow-x:auto}'
+            '.mermaid{margin:0;max-width:100%;overflow-x:auto}.mermaid svg{display:block;max-width:none;margin:0}'
+            '@media(orientation:landscape){.mermaid{overflow-x:hidden}.mermaid svg{max-width:100%;height:auto}}'
+            '[role="button"]{cursor:pointer}.flowchart-link{pointer-events:stroke}'
+            'h1{font-size:18px}</style>'
+            '<pre class="mermaid" id="workflow">' + escape(diagram) + '</pre>'
+            '<h1>' + escape(controller.SOP_NAME) + '</h1><pre id="detail" aria-live="polite">'
+            + escape(json.dumps(redact(nodes[phase]), indent=2)) + '</pre>'
+            '<div id="logic"></div>'
+            '<pre id="metadata">' + escape(json.dumps(redact(details), indent=2)) + '</pre>'
+            '<script id="sop-data" type="application/json">' + payload + '</script>'
             '<script type="module">import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";'
-            'mermaid.initialize({startOnLoad:true,securityLevel:"strict"});</script></html>')
+            'const data=JSON.parse(document.getElementById("sop-data").textContent),detail=document.getElementById("detail"),logic=document.getElementById("logic");'
+            'const show=(value,charts={})=>{detail.textContent=JSON.stringify(value,null,2);logic.replaceChildren();'
+            'for(const [name,source] of Object.entries(charts)){if(!source)continue;'
+            'const heading=document.createElement("h2"),chart=document.createElement("pre");'
+            'heading.textContent=name;chart.className="mermaid";chart.textContent=source;logic.append(heading,chart)}'
+            'mermaid.run({nodes:logic.querySelectorAll(".mermaid")})};'
+            'mermaid.initialize({startOnLoad:false,securityLevel:"strict",flowchart:{useMaxWidth:false}});await mermaid.run({querySelector:".mermaid"});'
+            'const bind=(element,value,charts={})=>{if(!element||!value)return;element.setAttribute("tabindex","0");element.setAttribute("role","button");'
+            'element.onclick=()=>show(value,charts);element.onkeydown=event=>{if(event.key==="Enter"||event.key===" "){'
+            'event.preventDefault();show(value,charts)}}};'
+            'for(const [name,value] of Object.entries(data.nodes)){'
+            'const node=document.querySelector(`#workflow .node[id*="flowchart-${name}-"]`);bind(node,value,data.logic[name])}'
+            'for(const [id,edge] of Object.entries(data.edges)){'
+            'bind(document.querySelector(`#workflow .edgePaths [data-id="${id}"]`),edge.decision,edge.logic);'
+            'bind(document.querySelector(`#workflow .edgeLabel [data-id="${id}"]`)?.parentElement,edge.decision,edge.logic)}'
+            'show(data.decision,data.logic[data.decision.status]);'
+            '</script></html>')
 
 
 def publish_artifacts(context, controller, result):
@@ -551,6 +613,9 @@ def main(argv=None):
     try:
         if not task_id or any(c.isspace() or c in '/\\' for c in task_id):
             raise SOPError("missing_task_id", "MULTICA_TASK_ID must be present and contain no whitespace or path separators", "Restore MULTICA_TASK_ID from the Multica run environment; do not invent an ID.")
+        if argv == ['--help']:
+            print(help_output(context))
+            return 0
         controller = load_controller()
         context['skill'] = getattr(controller, 'SOP_NAME', None)
         args = arguments(context['argv'], controller)
@@ -561,20 +626,27 @@ def main(argv=None):
                 context[key] = getattr(args, flag)
         context['controller_rules'] = 'Follow controller.workflow options and state prechecks.'
         if args.help:
-            result = {"ok": True, "status": None, "accepted": False, "finished": False, "state_changed": False,
-                      "next_step": callback("Start or resume the SOP.", []), "error": None, "rules": RULES,
-                      "workflow_rules": context["controller_rules"],
-                      "usage": "wrapper.py [init | <option> [controller options] | --error <message> | --error-file <path> | --help]; wrapper.py --validate"}
-        else:
-            result = transition(args, context, controller)
+            print(help_output(context))
+            return 0
+        result = transition(args, context, controller)
         result["reporting"] = deliver_pending()
     except Exception as error:
         result = exception_result(error, context)
         if context.get('quitted'):
             state_path(context).unlink(missing_ok=True)
             result.update(status='quitted', state_changed=True, next_step=callback(str(error)))
+    output = redact(response(result))
+    if controller and context.get('state'):
+        state = context['state']
+        state['output'] = output
+        state.setdefault('decisions', {})[output['status']] = output
+        state.setdefault('option_diagrams', {}).update(context.get('option_diagrams', {}))
+        state.setdefault('option_targets', {}).update(context.get('option_targets', {}))
+        if state_path(context).exists():
+            save_state(context, state)
+    context['output'] = output
     publish_artifacts(context, controller, result)
-    print(json.dumps(redact(response(result)), allow_nan=False))
+    print(json.dumps(output, allow_nan=False))
     return 0 if result["ok"] else result.get("returncode", 1)
 
 
