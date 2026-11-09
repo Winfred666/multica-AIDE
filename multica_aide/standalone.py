@@ -279,7 +279,7 @@ def begin(config, max_rounds=0):
         summary = [(n['id'], n['score']) for n in nodes]
         if summary != observed:
             print('AIDE tree: ' + json.dumps(summary), file=sys.stderr, flush=True)
-            sop_runtime.upload_artifact('aide-tree.html', render_tree(nodes))
+            sop_runtime.upload_artifact('aide-tree.html', render_tree(nodes), issue_id=os.environ['MULTICA_ISSUE_ID'])
             observed = summary
         if node:
             return {'status': 'completed', 'node': node}

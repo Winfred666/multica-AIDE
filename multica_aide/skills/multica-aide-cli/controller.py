@@ -15,13 +15,10 @@ if not (module / 'multica_aide').is_dir():
 sys.path.insert(0, str(module))
 
 from sop import Branch, Completed, Option, Parameter, State, Workflow
-from multica_aide import campaign, sop_runtime
+from multica_aide import campaign
 from multica_aide.standalone import completed_node
 from multica_aide.viewer import render_tree
 
-
-# Campaign monitor checkpoints use the invoking standalone package's task record.
-sop_runtime.ROOT = Path(__file__).resolve().parent
 
 
 def artifacts(context):
@@ -32,7 +29,7 @@ def artifacts(context):
 def initialize(context):
     observed = campaign.observe(context)
     if observed['route'] == 'finished' and 'result' not in context:
-        raise Completed('The existing node meets the exit condition.', {'node': observed['node']})
+        raise Completed('The existing node meets the exit condition: ' + json.dumps({key: observed['node'].get(key) for key in ('id', 'score', 'artifact')}), {'node': observed['node']})
     return observed
 
 

@@ -72,7 +72,7 @@ workflow = Workflow(
                 parts = {part.get_param('name', header='content-disposition'): part for part in message.iter_parts()}
                 filename = parts['file'].get_filename()
                 row = {'id': filename, 'issue_id': parts['issue_id'].get_content(),
-                       'task_id': parts['task_id'].get_content(), 'filename': filename,
+                       'filename': filename,
                        'content_type': parts['file'].get_content_type(), 'html': parts['file'].get_content()}
                 owner.requests.append((self.path, dict(self.headers), row))
                 owner.rows[(row['issue_id'], filename, row['content_type'])] = row
@@ -96,7 +96,25 @@ workflow = Workflow(
         self.addCleanup(patch.stopall)
         patch.dict(os.environ, self.env, clear=True).start()
         patch.object(runtime, 'ROOT', self.root).start()
-        patch.object(runtime, 'multica', return_value={'id': 'issue-one'}).start()
+        self.metadata = {}
+        patch.object(runtime, 'multica', self.cli).start()
+
+    def cli(self, *args):
+        if args[0] == 'get':
+            return {'id': args[1], 'metadata': self.metadata.setdefault(args[1], {})}
+        action, issue = args[1:3]
+        metadata = self.metadata.setdefault(issue, {})
+        key = args[args.index('--key') + 1]
+        if action == 'set':
+            metadata[key] = args[args.index('--value') + 1]
+        elif action == 'delete':
+            metadata.pop(key, None)
+        else:
+            raise AssertionError(args)
+        return {}
+
+    def record(self):
+        return json.loads(self.metadata[os.environ['MULTICA_ISSUE_ID']]['sop.multica-example'])
 
     def call(self, *args):
         output = io.StringIO()
@@ -116,7 +134,7 @@ workflow = Workflow(
 
     def test_transitions_replace_live_files_and_preserve_native_identity(self):
         self.assertEqual(self.call()[1]['status'], 'idea')
-        self.assertIn('task-one', self.state_html())
+        self.assertIn('issue-one', self.state_html())
         self.assertIn('Develop a measured idea.', self.state_html())
         self.assertIn('idea->test_result', unescape(self.state_html()))
         requests = len(self.requests)
@@ -136,8 +154,8 @@ workflow = Workflow(
         with patch.dict(os.environ, {'MULTICA_TASK_ID': 'task-two'}):
             self.call()
         self.assertEqual(len(self.rows), 2)
-        self.assertIn('task-two', self.state_html())
-        self.assertNotIn('task-one', self.state_html())
+        self.assertIn('issue-one', self.state_html())
+        self.assertNotIn('task_id', self.state_html())
         for path, headers, row in self.requests:
             self.assertEqual(path, '/api/upload-file')
             self.assertEqual(headers['Authorization'], 'Bearer test-artifact-token')
@@ -184,7 +202,7 @@ workflow = Workflow(
         (self.root / 'already-finished').touch()
         with patch.dict(os.environ, {'MULTICA_TASK_ID': 'task-two'}):
             self.assertEqual(self.call()[1]['status'], 'finished')
-        self.assertIn('task-two', self.state_html())
+        self.assertIn('issue-one', self.state_html())
         self.assert_current('finished')
 
     def test_upload_failure_preserves_action_result_and_task_record(self):
@@ -194,7 +212,7 @@ workflow = Workflow(
             code, result = self.call('test')
         self.assertEqual(code, 0)
         self.assertEqual(result['status'], 'review')
-        self.assertEqual(json.loads((self.root / '.state/task-one.json').read_text())['status'], 'review')
+        self.assertEqual(self.record()['status'], 'review')
         self.assertIn('Live artifact update failed: offline', errors.getvalue())
 
     def test_graphviz_failures_preserve_action_results_and_task_records(self):
@@ -204,15 +222,14 @@ workflow = Workflow(
             ('invalid', patch.object(runtime, 'graph_svg', side_effect=lambda source, identifier:
                 compile_graph('digraph { broken -> }', identifier)), 'Invalid DOT diagram')]
         for name, failure, message in cases:
-            with self.subTest(name=name), patch.dict(os.environ, {'MULTICA_TASK_ID': 'graphviz-' + name}):
+            with self.subTest(name=name), patch.dict(os.environ, {'MULTICA_ISSUE_ID': 'graphviz-' + name}):
                 self.call()
                 errors = io.StringIO()
                 with failure, contextlib.redirect_stderr(errors):
                     code, result = self.call('test')
                 self.assertEqual(code, 0)
                 self.assertEqual(result['status'], 'review')
-                record = self.root / '.state' / ('graphviz-' + name + '.json')
-                self.assertEqual(json.loads(record.read_text())['status'], 'review')
+                self.assertEqual(self.record()['status'], 'review')
                 self.assertIn(message, errors.getvalue())
 
     def test_foreground_controller_delivers_the_final_tree_before_returning(self):

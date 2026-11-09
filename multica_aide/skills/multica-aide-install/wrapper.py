@@ -2,8 +2,6 @@
 """Reusable SOP runtime. Customize controller.py; run this file for JSON guidance."""
 
 import argparse
-from datetime import datetime, timezone
-import hashlib
 from html import escape
 import importlib.util
 import json
@@ -14,19 +12,16 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
-import traceback
 import uuid
 from types import SimpleNamespace
 from urllib.request import Request, urlopen
 
 
 ROOT = Path(__file__).resolve().parent
-ERROR_REPO = ""
 RULES = {
-    "identity": "MULTICA_TASK_ID is required; state is keyed by that exact value.",
-    "state": "Each task owns .state/<task_id>.json; read it directly and replace atomically.",
-    "transitions": "Controller phases advance on callbacks; wrapper assertions can enter error or blocked; completion deletes the task record for reuse in the same native task.",
+    "identity": "MULTICA_ISSUE_ID and MULTICA_WORKSPACE_ID identify the shared issue state.",
+    "state": "Each SOP owns one issue metadata key, sop.<skill-name>, containing serialized JSON.",
+    "transitions": "Controller phases advance on callbacks; wrapper assertions can enter error or blocked; completion deletes only this SOP's metadata key.",
     "callbacks": "Choose a named option valid in the recorded state; init starts or resumes without an action.",
     "failure": "Assertion failures enter error; one repaired retry may recover or enter blocked. Reconcile external writes first.",
     "repair": "Add a reproducing regression fixture, repair minimally, retry once; stop if still failing.",
@@ -149,47 +144,59 @@ def multica(*args):
     return json.loads(result.stdout)
 
 
-def atomic_write(path, content):
-    fd, temporary = tempfile.mkstemp(prefix="." + path.name + ".", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8", newline="") as output:
-            output.write(content)
-            output.flush()
-            os.fsync(output.fileno())
-        os.replace(temporary, path)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+def state_key(context):
+    key = 'sop.' + context['skill']
+    if len(key) > 64:
+        raise SOPError('invalid_state_key', 'Issue-bound SOP names must be at most 60 characters')
+    return key
 
 
-def state_path(context):
-    return ROOT / '.state' / (context['task_id'] + '.json')
-
-
-def read_state(context, phases):
-    path = state_path(context)
-    if not path.exists():
+def read_state(context, phases=None):
+    issue = multica('get', context['issue_id'])
+    value = issue['metadata'].get(state_key(context))
+    if value is None:
         return {}
     try:
-        state = json.loads(path.read_text(encoding='utf-8'))
-    except json.JSONDecodeError as error:
-        raise SOPError('invalid_state', 'Invalid task state JSON: ' + str(error)) from error
-    if not isinstance(state, dict) or state.get('status') not in phases:
-        raise SOPError('invalid_state', 'Task state must contain a declared status')
+        state = json.loads(value)
+    except (TypeError, json.JSONDecodeError) as error:
+        raise SOPError('invalid_state', 'Invalid SOP metadata JSON: ' + str(error)) from error
+    if (not isinstance(state, dict) or not isinstance(state.get('status'), str) or
+            phases is not None and state['status'] not in phases):
+        raise SOPError('invalid_state', 'SOP metadata must contain a declared status')
+    # Replayed choices use the receiving checkout after an issue handoff.
+    for choice in state.get('output', {}).get('next_step', []):
+        if choice.get('command'):
+            words = shlex.split(choice['command'])
+            if words[:2] == state.get('runtime'):
+                choice['command'] = shlex.join([sys.executable, str(ROOT / 'wrapper.py'), *words[2:]])
     return state
 
 
 def save_state(context, state):
-    path = state_path(context)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write(path, json.dumps(state, default=str, allow_nan=False))
+    state['runtime'] = [sys.executable, str(ROOT / 'wrapper.py')]
+    try:
+        multica('metadata', 'set', context['issue_id'], '--key', state_key(context),
+                '--type', 'string', '--value', json.dumps(state, default=str, allow_nan=False, separators=(',', ':')))
+    except Exception as error:
+        context['state_write_failed'] = True
+        raise SOPError('state_write_failed', str(error),
+                       'Inspect the saved SOP metadata and reconcile action effects before retrying; do not repeat a completed action.') from error
+
+
+def delete_state(context):
+    try:
+        multica('metadata', 'delete', context['issue_id'], '--key', state_key(context))
+    except Exception as error:
+        context['state_write_failed'] = True
+        raise SOPError('state_write_failed', str(error),
+                       'Inspect the saved SOP metadata and reconcile action effects before retrying; do not repeat a completed action.') from error
+    context['state_deleted'] = True
 
 
 def help_output(context):
-    path = state_path(context)
-    if path.exists():
-        state = json.loads(path.read_text(encoding='utf-8'))
-        return json.dumps(redact(state.get('output', state)), allow_nan=False)
+    state = read_state(context)
+    if state:
+        return json.dumps(redact(agent_decision(state.get('output', state))), allow_nan=False)
     return (ROOT / 'SKILL.md').read_text(encoding='utf-8').split('---', 2)[2].strip()
 
 
@@ -228,7 +235,7 @@ def recovery_result(receipt, status, context):
                              repair_args)
     return {'ok': False, 'accepted': False, 'finished': False, 'blocked': blocked,
             'status': status, 'state_changed': False, 'error': detail, 'next_step': next_step,
-            'evidence': str(state_path(context)),
+            'evidence': {'issue_id': context['issue_id'], 'key': state_key(context)},
             'external_write_attempted': receipt.get('external_write_attempted', False),
             'data': receipt.get('assertion', {}).get('result', {}).get('data')}
 
@@ -257,8 +264,8 @@ def transition(args, context, controller):
     receipt = None
     if phase in {'error', 'blocked'}:
         receipt = state['recovery']
-        if any(receipt[key] != context[key] for key in ('task_id', 'workspace_id', 'issue_id')):
-            raise SOPError('wrong_recovery', 'Assertion receipt belongs to another issue or workspace')
+        if receipt['issue_id'] != context['issue_id']:
+            raise SOPError('wrong_recovery', 'Assertion receipt belongs to another issue')
         if phase == 'blocked' or args.event == 'init':
             return recovery_result(receipt, before, context)
         if args.event != 'repaired':
@@ -268,10 +275,10 @@ def transition(args, context, controller):
         args = arguments(receipt['argv'], controller)
     if args.error is not None or args.error_file is not None:
         message = args.error if args.error is not None else args.error_file.read_text(encoding='utf-8')
-        context['reported_error'] = message
         hint = next((hint for pattern, hint in PATTERNS if re.search(pattern, message)), None)
         raise SOPError('action_error', message or 'Agent reported an empty error', hint)
     if args.event == 'quit' and phase == workflow.initial and not args.extra:
+        delete_state(context)
         context['quitted'] = True
         context['state'] = state
         message = f'SoP {controller.SOP_NAME} quitted'
@@ -286,7 +293,7 @@ def transition(args, context, controller):
 
     if not context['issue_id']:
         raise SOPError('missing_issue_id', 'MULTICA_ISSUE_ID is required')
-    context.update(cli=cli, error=SOPError)
+    context.update(cli=cli, error=SOPError, save_state=lambda: save_state(context, state))
     invalid = None
     try:
         if receipt and receipt['assertion']['boundary'] == 'after':
@@ -325,19 +332,19 @@ def transition(args, context, controller):
     except AssertionError as error:
         if 'assertion' not in context:
             raise
-        clean_context = json.loads(json.dumps({k: v for k, v in context.items() if k not in {'cli', 'error', 'args'}}, default=str))
-        failure = exception_result(error, clean_context)
+        failure = exception_result(error, context)
         status = 'blocked' if receipt else 'error'
-        saved = {**clean_context, 'phase': phase, 'args': vars(args),
+        saved = {'issue_id': context['issue_id'], 'phase': phase, 'argv': context['argv'],
+                 'assertion': context['assertion'],
                  'error': failure['error'], 'external_write_attempted': failure['external_write_attempted']}
         state.update(status=status, recovery=saved)
-        save_state(context, state)
         result = recovery_result(saved, status, context)
         result['state_changed'] = True
         return result
     finally:
         context.pop('cli', None)
         context.pop('error', None)
+        context.pop('save_state', None)
     if result['phase'] == workflow.initial:
         result.setdefault('alternatives', []).append({'instruction': 'Stop this SOP.', 'callback': ['quit']})
     next_phase = result.pop('phase')
@@ -355,11 +362,10 @@ def transition(args, context, controller):
                   state_changed=changed, error=invalid)
     json.dumps(result, allow_nan=False)
     if finished:
-        state_path(context).unlink(missing_ok=True)
+        delete_state(context)
     elif changed:
         state.pop('recovery', None)
         state['status'] = status
-        save_state(context, state)
     return result
 
 
@@ -382,50 +388,6 @@ def redact(value):
     return clean(value)
 
 
-def github(*argv, payload=None):
-    result = subprocess.run(["gh", "api", "--hostname", "github.com", *argv],
-                            input=json.dumps(payload) if payload is not None else None,
-                            capture_output=True, text=True, timeout=10,
-                            env={**os.environ, "GH_PROMPT_DISABLED": "1"})
-    if result.returncode:
-        raise RuntimeError(result.stderr.strip() or f"gh exited {result.returncode}")
-    return json.loads(result.stdout)
-
-
-def deliver_pending():
-    destination = os.environ.get("SYMBOLIC_SOP_ERROR_REPO", "").strip()
-    if not destination:
-        return {"status": "local", "reason": "external reporting is not configured"}
-    outbox = ROOT / ".errors"
-    if not outbox.exists():
-        return {"status": "none"}
-    try:
-        pending = sorted(outbox.glob("*.json"))
-        if not pending:
-            return {"status": "none"}
-        path = pending[0]
-        incident = json.loads(path.read_text(encoding="utf-8"))
-        repo = destination
-        if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", repo):
-            raise ValueError("Configure SYMBOLIC_SOP_ERROR_REPO as owner/repo")
-        metadata = github("repos/" + repo)
-        if metadata.get("private") is not True or metadata.get("full_name", "").lower() != repo.lower():
-            raise ValueError("Error destination must be the configured private repository")
-        details = json.dumps(redact(incident), indent=2, ensure_ascii=True)
-        chunks = [details[start:start + 18000] for start in range(0, len(details), 18000)]
-        issue = github("--method", "POST", f"repos/{repo}/issues", "--input", "-", payload={
-            "title": f"[symbolic-sop] {incident['code']} ({incident['incident_id']})",
-            "body": "Error report (JSON; continuation in comments if needed):\n\n" + chunks[0],
-        })
-        for chunk in chunks[1:]:
-            github("--method", "POST", f"repos/{repo}/issues/{issue['number']}/comments", "--input", "-",
-                   payload={"body": "Error report continued:\n\n" + chunk})
-        path.unlink()
-        return {"status": "sent", "incident_id": incident["incident_id"], "issue_url": issue["html_url"], "remaining": len(pending) - 1}
-    except Exception as error:
-        return redact({"status": "queued", "error": f"{type(error).__name__}: {error}", "outbox": str(outbox)})
-
-
 def exception_result(error, context):
     assertion_failure = isinstance(error, AssertionError) and bool(context.get('assertion'))
     hint = error.hint if isinstance(error, SOPError) else None
@@ -438,18 +400,7 @@ def exception_result(error, context):
     if hint is None or not isinstance(error, SOPError):
         detail["rules"] = RULES
         detail["workflow_rules"] = context.get("controller_rules", "Read controller.py; preserve the workflow contract.")
-        detail["fixture_request"] = "Preserve the failing argv, relevant Multica IDs, and prior task JSON record; add a failing local fixture before changing the script."
-    detail["incident_id"] = uuid.uuid4().hex
-    incident = {**context, "incident_id": detail["incident_id"], "timestamp": datetime.now(timezone.utc).isoformat(),
-                "repository": os.environ.get("SYMBOLIC_SOP_ERROR_REPO", ERROR_REPO),
-                "code": code, "error": detail, "traceback": traceback.format_exc()}
-    try:
-        incident["script_sha256"] = hashlib.sha256((ROOT / "controller.py").read_bytes()).hexdigest()
-        incident["wrapper_sha256"] = hashlib.sha256((ROOT / "wrapper.py").read_bytes()).hexdigest()
-        incident["cwd"] = str(Path.cwd())
-    except OSError:
-        pass
-    incident = redact(incident)
+        detail["fixture_request"] = "Preserve the failing argv, relevant Multica IDs, and prior SOP metadata; add a failing local fixture before changing the script."
     writes = [command for command in context.get("commands", []) if command["write"]]
     write_attempted = bool(writes) or context.get('external_write_attempted', False)
     retry = context["argv"] if not isinstance(error, SOPError) and not write_attempted else []
@@ -459,24 +410,15 @@ def exception_result(error, context):
     result = {"ok": False, "status": context.get("prior_status"), "accepted": False, "finished": False,
               "state_changed": False, "error": redact(detail),
               "next_step": recovery, "external_write_attempted": write_attempted}
-    if "native_result" in context:
-        result.update(data={key: value for key, value in context['native_result'].items()
-                            if key not in {'ok', 'error', 'instruction'}},
-                      returncode=context["native_returncode"])
-    try:
-        outbox = ROOT / ".errors"
-        outbox.mkdir(mode=0o700, exist_ok=True)
-        path = outbox / (incident["timestamp"].replace(":", "-") + "-" + incident["incident_id"] + ".json")
-        atomic_write(path, json.dumps(incident, indent=2))
-        result["reporting"] = deliver_pending()
-        result["reporting"]["current_incident_queued"] = path.exists()
-    except Exception as reporting_error:
-        result["reporting"] = redact({"status": "failed", "error": str(reporting_error), "incident": incident})
     return result
 
 
+def agent_decision(output):
+    return {key: output[key] for key in ('status', 'instruction', 'next_step', 'error', 'evidence', 'usage') if key in output}
+
+
 def response(result):
-    """Agent guidance; diagnostics remain in the saved incident."""
+    """Agent guidance for the current issue state."""
     step = result['next_step']
     instruction = step['instruction']
     if result['status'] is not None:
@@ -489,22 +431,22 @@ def response(result):
     output = {'status': result['status'], 'instruction': instruction, 'next_step': options}
     if result.get('error'):
         output['error'] = {key: result['error'][key] for key in ('code', 'message')}
-    for key in ('data', 'evidence', 'usage'):
+    for key in ('evidence', 'usage'):
         value = result.get(key)
         if isinstance(value, dict):
             value = {k: v for k, v in value.items() if v not in (None, '', [], {})}
         if value not in (None, '', [], {}):
             output[key] = value
-    return output
+    return agent_decision(output)
 
 
-def upload_artifact(filename, content):
-    """Replace this agent's named live deliverable on the native task issue."""
+def upload_artifact(filename, content, *, issue_id):
+    """Publish the named live deliverable on the native issue."""
     if not all(os.environ.get(key) for key in
-               ('MULTICA_SERVER_URL', 'MULTICA_TOKEN', 'MULTICA_TASK_ID', 'MULTICA_ISSUE_ID', 'MULTICA_WORKSPACE_ID')):
+               ('MULTICA_SERVER_URL', 'MULTICA_TOKEN', 'MULTICA_ISSUE_ID', 'MULTICA_WORKSPACE_ID')):
         return
     boundary = 'sop-' + uuid.uuid4().hex
-    fields = {'task_id': os.environ['MULTICA_TASK_ID'], 'issue_id': os.environ['MULTICA_ISSUE_ID']}
+    fields = {'issue_id': issue_id}
     body = b''.join((f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{value}\r\n').encode()
                     for key, value in fields.items())
     body += (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="{filename}"\r\n'
@@ -552,16 +494,15 @@ def state_artifact(context, controller, result):
                                      for label, target in branch.routes.items())
     edges = {(state.name, option.name): option.target for state in states.values()
              if not callable(state.options) for option in state.options}
-    for source, targets in context.get('state', {}).get('option_targets', {}).items():
+    for source, targets in context.get('option_targets', {}).items():
         edges.update({(source, name): target for name, target in targets.items()})
-    logic = dict(context.get('state', {}).get('option_diagrams', {}))
+    logic = dict(context.get('option_diagrams', {}))
     for state in states.values():
         if not callable(state.options):
             logic[state.name] = {option.name: option.diagram() for option in state.options}
-    # Cached diagrams from the previous syntax are display data, not workflow state.
     logic = {state: {name: graph_svg(source, f'logic_{state}_{name}')
                      for name, source in charts.items()
-                     if re.match(r'\s*(?:strict\s+)?(?:di)?graph\b', source)}
+                     if source}
              for state, charts in logic.items()}
     diagram += '\n' + '\n'.join(f'{quote(source)} -> {quote(target)} [id="option_{index}", label={quote(option)}];'
                                 for index, ((source, option), target) in enumerate(edges.items()))
@@ -575,22 +516,19 @@ def state_artifact(context, controller, result):
         color = '#fee2e2' if result.get('error') else '#dcfce7'
         diagram += f'\n{quote(phase)} [fillcolor="{color}", color="#2563eb", penwidth=2];\n'
     diagram += '\n}'
-    details = {'issue_id': os.environ['MULTICA_ISSUE_ID'], 'task_id': context['task_id'], 'status': status}
+    details = {'issue_id': context['issue_id'], 'sop': controller.SOP_NAME, 'status': status}
     if result.get('error'):
         details.update(failed_state=phase, boundary=assertion.get('boundary'), error=result['error'])
-    nodes = {name: decision for name, decision in context.get('state', {}).get('decisions', {}).items()
-             if name in states}
+    nodes = {}
     for state in states.values():
-        if state.name in nodes:
-            continue
-        # Unvisited states have declared guidance only; never run their views or option factories for a preview.
+        # Other states show declared guidance; previews never run views or option factories.
         choices = [callback(option.prompt, option.callback()) for option in state.options] if not callable(state.options) else []
         if state.initial:
             choices.append(callback('Stop this SOP.', ['quit']))
         nodes[state.name] = response({'status': state.name,
                                      'next_step': {**callback(state.description), 'alternatives': choices}})
     if context.get('output'):
-        nodes[phase] = context['output']
+        nodes[phase] = agent_decision(context['output'])
     links = {f'option_{index}': {
         'decision': next((option for option in nodes[source]['next_step']
                           if shlex.split(option['command'])[2] == name), None),
@@ -634,7 +572,7 @@ def state_artifact(context, controller, result):
 
 def publish_artifacts(context, controller, result):
     if not controller or not all(os.environ.get(key) for key in
-            ('MULTICA_SERVER_URL', 'MULTICA_TOKEN', 'MULTICA_TASK_ID', 'MULTICA_ISSUE_ID', 'MULTICA_WORKSPACE_ID')):
+            ('MULTICA_SERVER_URL', 'MULTICA_TOKEN', 'MULTICA_ISSUE_ID', 'MULTICA_WORKSPACE_ID')):
         return
     shifted = result.get('state_changed') or result.get('finished')
     if not (shifted or result.get('error') or
@@ -643,10 +581,11 @@ def publish_artifacts(context, controller, result):
     try:
         # In DEBUG mode, update the controller workflow's state chart artifact on every state shift.
         if controller.DEBUG and shifted:
-            upload_artifact(controller.SOP_NAME + '-state.html', state_artifact(context, controller, result))
+            upload_artifact(controller.SOP_NAME + '-state.html', state_artifact(context, controller, result),
+                            issue_id=context['issue_id'])
         if not result.get('error') and hasattr(controller, 'artifacts'):
             for filename, content in controller.artifacts({**context, 'cli': multica, 'error': SOPError}).items():
-                upload_artifact(filename, content)
+                upload_artifact(filename, content, issue_id=context['issue_id'])
     except Exception as error:
         print(redact('Live artifact update failed: ' + str(error)), file=sys.stderr)
 
@@ -662,21 +601,21 @@ def main(argv=None):
         except Exception as error:
             print(json.dumps({'status': 'error', 'error': str(error)}))
             return 1
-    task_id = os.environ.get("MULTICA_TASK_ID")
-    context = {"task_id": task_id, "agent_id": os.environ.get("MULTICA_AGENT_ID"),
+    context = {"agent_id": os.environ.get("MULTICA_AGENT_ID"),
                "issue_id": os.environ.get("MULTICA_ISSUE_ID"),
                "workspace_id": os.environ.get("MULTICA_WORKSPACE_ID"),
-               "argv": argv, "script": str(ROOT / "controller.py"),
-               "wrapper": str(ROOT / "wrapper.py")}
+               "argv": argv}
     controller = None
     try:
-        if not task_id or any(c.isspace() or c in '/\\' for c in task_id):
-            raise SOPError("missing_task_id", "MULTICA_TASK_ID must be present and contain no whitespace or path separators", "Restore MULTICA_TASK_ID from the Multica run environment; do not invent an ID.")
+        for key in ('issue_id', 'workspace_id'):
+            if not context[key]:
+                raise SOPError('missing_' + key, 'MULTICA_' + key.upper() + ' is required')
         if argv == ['--help']:
+            context['skill'] = validate_package()
             print(help_output(context))
             return 0
         controller = load_controller()
-        context['skill'] = getattr(controller, 'SOP_NAME', None)
+        context['skill'] = controller.SOP_NAME
         args = arguments(context['argv'], controller)
         if getattr(args, 'workspace', None) and args.workspace != context['workspace_id']:
             raise SOPError('wrong_workspace', '--workspace must match the native run workspace')
@@ -688,21 +627,20 @@ def main(argv=None):
             print(help_output(context))
             return 0
         result = transition(args, context, controller)
-        result["reporting"] = deliver_pending()
     except Exception as error:
         result = exception_result(error, context)
         if context.get('quitted'):
-            state_path(context).unlink(missing_ok=True)
             result.update(status='quitted', state_changed=True, next_step=callback(str(error)))
     output = redact(response(result))
     if controller and context.get('state'):
         state = context['state']
         state['output'] = output
-        state.setdefault('decisions', {})[output['status']] = output
-        state.setdefault('option_diagrams', {}).update(context.get('option_diagrams', {}))
-        state.setdefault('option_targets', {}).update(context.get('option_targets', {}))
-        if state_path(context).exists():
-            save_state(context, state)
+        if not context.get('state_deleted') and not context.get('state_write_failed'):
+            try:
+                save_state(context, state)
+            except Exception as error:
+                result = exception_result(error, context)
+                output = redact(response(result))
     context['output'] = output
     publish_artifacts(context, controller, result)
     print(json.dumps(output, allow_nan=False))

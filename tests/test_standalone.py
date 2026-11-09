@@ -67,16 +67,16 @@ class ClientSOP(unittest.TestCase):
 
         env = {'MULTICA_TASK_ID': 'protocol-test', 'MULTICA_ISSUE_ID': self.issue['id'],
                'MULTICA_WORKSPACE_ID': 'workspace'}
-        path = self.skill / '.state/protocol-test.json'
+        key = 'sop.multica-aide-cli'
         body = (self.skill / 'SKILL.md').read_text().split('---', 2)[2].strip()
         with patch.dict(os.environ, env, clear=True), patch.object(sop_runtime, 'load_controller', return_value=self.controller):
             self.assertEqual(call('--help'), (0, body))
-            self.assertFalse(path.exists())
+            self.assertNotIn(key, self.issue['metadata'])
             initial = call()
-            saved, modified = path.read_bytes(), path.stat().st_mtime_ns
+            saved = self.issue['metadata'][key]
             with patch.object(self.controller.workflow, 'before', side_effect=AssertionError('Help ran a precheck')):
                 self.assertEqual(call('--help'), initial)
-            self.assertEqual((path.read_bytes(), path.stat().st_mtime_ns), (saved, modified))
+            self.assertEqual(self.issue['metadata'][key], saved)
             with patch.object(self.controller.workflow, 'after', side_effect=AssertionError('Repair candidate check')):
                 failed = call('enter')
             self.assertEqual(json.loads(failed[1])['status'], 'error')
@@ -86,15 +86,17 @@ class ClientSOP(unittest.TestCase):
                 repaired = call('repaired')
                 self.assertEqual(json.loads(repaired[1])['status'], 'idea', repaired[1])
             self.assertEqual(self.progress()['candidate'], candidate)
+            self.assertIn(candidate, json.loads(repaired[1])['instruction'])
+            self.assertNotIn('data', json.loads(repaired[1]))
             self.solution(.2)
             self.assertEqual(json.loads(call('test', '--description', 'A passing baseline.')[1])['status'], 'test')
             self.assertEqual(json.loads(call('continue')[1])['status'], 'review')
             delivery = self.progress()['test_result']['delivery']
             self.assertEqual(json.loads(call('record', '--delivery', json.dumps(delivery), '--review', 'The goal is met.')[1])['status'], 'tested')
             self.assertEqual(json.loads(call('continue')[1])['status'], 'finished')
-            self.assertFalse(path.exists())
+            self.assertNotIn(key, self.issue['metadata'])
             self.assertEqual(call('--help'), (0, body))
-            self.assertFalse(path.exists())
+            self.assertNotIn(key, self.issue['metadata'])
         self.assertEqual(self.controller.workflow.states['test'].options[0].target, 'test_result')
         self.assertEqual(self.controller.workflow.branches['test_result'].routes, {'running': 'test', 'ended': 'review'})
         self.assertEqual(self.controller.workflow.branches['record_result'].routes, {'yes': 'tested', 'no': 'test_failed'})
@@ -104,7 +106,9 @@ class ClientSOP(unittest.TestCase):
         result = {'status': 'completed', 'node': {'id': 'measured'}}
         with patch.object(campaign, 'installer_config', return_value=self.config), \
                 patch('multica_aide.standalone.begin', return_value=result) as begin:
-            self.assertEqual(campaign.start_install(None, {}), {'data': result})
+            output = campaign.start_install(None, {})
+            self.assertEqual(output['data'], result)
+            self.assertIn('measured', output['instruction'])
         begin.assert_called_once_with(self.config)
 
     def save_settings(self):
@@ -121,13 +125,20 @@ class ClientSOP(unittest.TestCase):
         if words[:2] == ('metadata', 'set'):
             self.issue['metadata'][words[words.index('--key') + 1]] = words[words.index('--value') + 1]
             return {}
+        if words[:2] == ('metadata', 'delete'):
+            self.issue['metadata'].pop(words[words.index('--key') + 1], None)
+            return {}
         raise AssertionError(words)
 
     def run_sop(self, *argv):
         args = sop_runtime.arguments(list(argv), self.controller)
-        context = {'task_id': 'native-test-task', 'issue_id': self.issue['id'], 'workspace_id': 'workspace',
+        context = {'skill': 'multica-aide-cli', 'issue_id': self.issue['id'], 'workspace_id': 'workspace',
                    'agent_id': 'client', 'argv': list(argv)}
-        return sop_runtime.transition(args, context, self.controller)
+        result = sop_runtime.transition(args, context, self.controller)
+        if context.get('state') and not context.get('state_deleted'):
+            context['state']['output'] = sop_runtime.response(result)
+            sop_runtime.save_state(context, context['state'])
+        return result
 
     def progress(self):
         return read(self.workdir / '.aide-client.json')
@@ -297,7 +308,7 @@ class ClientSOP(unittest.TestCase):
         with patch.object(monitor, 'INTERVALS', (.001,)):
             result = self.run_sop('continue')
         self.assertEqual(result['status'], 'test')
-        record = read(self.skill / '.state/native-test-task.json')
+        record = json.loads(self.issue['metadata']['sop.multica-aide-cli'])
         self.assertEqual(record['monitor']['checkpoint'], 1)
         self.assertNotIn('WARNING', str(result['data']['new_output']))
         result = self.run_sop('exception')

@@ -6,7 +6,7 @@ import re
 import subprocess
 from types import SimpleNamespace
 
-from . import monitor, sop_runtime
+from . import monitor
 
 from .standalone import API, completed_node, contract, development_running, install, load_config, metadata, read, search, wake, write
 from .worktrees import add_worktree, checkpoint, git, hidden_paths
@@ -236,7 +236,7 @@ def finish(args, context):
         raise ValueError('No delivery meets the exit condition.')
     progress['finished'] = True
     write(workdir / '.aide-client.json', progress)
-    return {'data': {'node': node}}
+    return {'data': {'node': node}, 'instruction': 'Deliver the measured solution: ' + json.dumps({key: node.get(key) for key in ('id', 'score', 'artifact')})}
 
 
 def candidate_view(context):
@@ -250,7 +250,9 @@ def candidate_view(context):
         data['developer_issue_id'] = progress['developer_issue_id']
     if progress.get('node_id'):
         data['node_id'] = progress['node_id']
-    return {'data': data}
+    facts = {key: data[key] for key in ('candidate', 'baseline', 'mode', 'benchmark', 'public_data', 'delivery_contract', 'developer_issue_id', 'node_id') if key in data}
+    facts['tree_directory'] = config['tree']
+    return {'data': data, 'instruction': 'Work on the bound candidate using these facts:\n' + json.dumps(facts, indent=2)}
 
 
 def delegate(args, context):
@@ -319,6 +321,8 @@ def test_view(context):
     view['data']['test_command'] = shlex.join([arg.replace('{solution}', progress['candidate'])
                                              for arg in config['benchmark']['evaluate_argv']])
     view['data']['test_result'] = progress.get('test_result')
+    view['instruction'] += '\nTest command: ' + view['data']['test_command']
+    view['instruction'] += '\nRecorded test: ' + json.dumps(progress.get('test_result'))
     return view
 
 
@@ -349,7 +353,7 @@ def monitor_test(args, context):
     ```"""
     issue, workdir, progress, config = client(context)
     report = monitor.wait(progress['test_job'], context['state'].setdefault('monitor', {}))
-    sop_runtime.save_state(context, context['state'])
+    context['save_state']()
     if report['state'] == 'ended' and report['returncode'] == 0 and not report.get('exception'):
         try:
             delivery = monitor.delivery(progress['test_job'])
@@ -423,4 +427,8 @@ def confirm_install(args, context):
 
 def start_install(args, context):
     from .standalone import begin
-    return {'data': begin(installer_config())}
+    result = begin(installer_config())
+    facts = {'status': result['status']}
+    if result.get('node'):
+        facts['node'] = {key: result['node'].get(key) for key in ('id', 'score', 'artifact')}
+    return {'data': result, 'instruction': 'Report the campaign result: ' + json.dumps(facts)}

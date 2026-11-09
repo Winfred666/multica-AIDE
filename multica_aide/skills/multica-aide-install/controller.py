@@ -15,16 +15,18 @@ if not (module / 'multica_aide').is_dir():
 sys.path.insert(0, str(module))
 
 from sop import Option, Parameter, State, Workflow
-from multica_aide import campaign, sop_runtime
+from multica_aide import campaign
 from multica_aide.standalone import install
 
 
-# Campaign monitor checkpoints use the invoking standalone package's task record.
-sop_runtime.ROOT = Path(__file__).resolve().parent
-
 
 def settings(context):
-    return {'data': install(campaign.installer_config(), context['issue_id'])}
+    config = campaign.installer_config()
+    result = install(config, context['issue_id'])
+    facts = {key: config[key] for key in ('drafts', 'clients', 'mode', 'port', 'template') if key in config}
+    facts['benchmark'] = config['benchmark']['description']
+    facts['agents'] = {key: value for key, value in config.items() if key.startswith('AIDE_')}
+    return {'data': result, 'instruction': 'Confirm these campaign settings:\n' + json.dumps(facts, indent=2)}
 
 
 workflow = Workflow(
