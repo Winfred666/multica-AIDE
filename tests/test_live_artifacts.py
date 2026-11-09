@@ -110,7 +110,7 @@ workflow = Workflow(
     def assert_current(self, name):
         svg = self.state_html().split('<div class="diagram" id="workflow">', 1)[1].split('</div>', 1)[0]
         graph = ET.fromstring(svg)
-        box = graph.find(f".//*[@id='state_{name}']/{{http://www.w3.org/2000/svg}}path")
+        box = graph.find(f".//*[@id='state_{name}']/{{http://www.w3.org/2000/svg}}polygon")
         self.assertEqual(box.get('fill'), '#dcfce7')
         self.assertEqual(box.get('stroke-width'), '2')
 

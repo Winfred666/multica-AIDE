@@ -15,7 +15,6 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import textwrap
 import traceback
 import uuid
 from types import SimpleNamespace
@@ -491,17 +490,14 @@ def graph_svg(source, identifier):
     dot = shutil.which('dot')
     if not dot:
         raise FileNotFoundError('Install Graphviz and put dot on PATH to compile the SOP preview.')
-    result = subprocess.run([dot, '-Tsvg', '-Gid=' + identifier, '-Gpad=0.2',
-                             '-Gnodesep=0.35', '-Granksep=0.45',
-                             '-Nfontname=Helvetica', '-Nfontsize=14', '-Nstyle=rounded,filled',
-                             '-Nfillcolor=#eef2ff', '-Ncolor=#94a3b8', '-Nfontcolor=#172033',
-                             '-Nmargin=0.16,0.1', '-Efontname=Helvetica', '-Efontsize=12',
-                             '-Ecolor=#64748b', '-Efontcolor=#475569', '-Earrowsize=0.7'], input=source, text=True,
+    result = subprocess.run([dot, '-Tsvg', '-Gid=' + identifier,
+                             '-Nfontname=Helvetica', '-Nstyle=filled', '-Nmargin=0', '-Nheight=0.3',
+                             '-Nfillcolor=#eef2ff', '-Ncolor=#94a3b8',
+                             '-Efontname=Helvetica', '-Efontsize=12', '-Ecolor=#64748b'], input=source, text=True,
                             capture_output=True, timeout=30)
     if result.returncode:
         raise ValueError('Invalid DOT diagram: ' + result.stderr.strip())
-    svg = re.sub(r'<!--.*?-->', '', result.stdout[result.stdout.index('<svg'):], flags=re.S)
-    return re.sub(r'>\s+<', '><', svg).strip()
+    return result.stdout[result.stdout.index('<svg'):]
 
 
 def state_artifact(context, controller, result):
@@ -514,15 +510,12 @@ def state_artifact(context, controller, result):
         phase = (assertion.get('result', {}).get('phase') or recovery.get('phase') or
                  context.get('phase') or context.get('prior_status') or controller.workflow.initial)
     states = controller.workflow.states
-    order = {node.name: index for index, node in enumerate(controller.workflow.nodes)}
     quote = json.dumps
-    diagram = 'digraph workflow {\nrankdir=TB; bgcolor="transparent";\n'
-    diagram += 'node [shape=box, fontname="Helvetica"]; edge [fontname="Helvetica"];\n'
+    diagram = 'digraph workflow {\nrankdir=LR; bgcolor="transparent";\nnode [shape=box];\n'
     diagram += '\n'.join(f'{quote(name)} [id={quote("state_" + name)}];' for name in states)
     for branch in controller.workflow.branches.values():
-        label = textwrap.fill(branch.description, 18, break_long_words=False, break_on_hyphens=False)
-        diagram += f'\n{quote(branch.name)} [shape=diamond, style=filled, label={quote(label)}];'
-        diagram += '\n' + '\n'.join(f'{quote(branch.name)} -> {quote(target)} [label={quote(label)}, constraint={str(order[target] > order[branch.name]).lower()}];'
+        diagram += f'\n{quote(branch.name)} [shape=diamond, fixedsize=shape, width=1.6, height=0.3, fontsize=12, label={quote(branch.description)}];'
+        diagram += '\n' + '\n'.join(f'{quote(branch.name)} -> {quote(target)} [xlabel={quote(label)}];'
                                      for label, target in branch.routes.items())
     edges = {(state.name, option.name): option.target for state in states.values()
              if not callable(state.options) for option in state.options}
@@ -537,18 +530,17 @@ def state_artifact(context, controller, result):
                      for name, source in charts.items()
                      if re.match(r'\s*(?:strict\s+)?(?:di)?graph\b', source)}
              for state, charts in logic.items()}
-    # Keep declared forward flow ranked; return arrows must not stretch the main path.
-    diagram += '\n' + '\n'.join(f'{quote(source)} -> {quote(target)} [id="option_{index}", label={quote(option)}, constraint={str(order[target] > order[source]).lower()}];'
+    diagram += '\n' + '\n'.join(f'{quote(source)} -> {quote(target)} [id="option_{index}", xlabel={quote(option)}];'
                                 for index, ((source, option), target) in enumerate(edges.items()))
     # Boundary markers are diagram-only; they never introduce workflow options.
-    boundaries = ['__start [shape=point, label="", fillcolor=black, color=black];',
+    boundaries = ['__start [shape=point, label="", fillcolor=black, color=black, width=0.05, height=0.05];',
                   '__end [shape=doublecircle, label="", style=filled, fillcolor=black, color=black, width=0.2, height=0.2, fixedsize=true];',
                   f'__start -> {quote(controller.workflow.initial)};']
     boundaries.extend(f'{quote(state.name)} -> __end;' for state in states.values() if state.final)
     diagram += '\n' + '\n'.join(boundaries)
     if phase in states:
         color = '#fee2e2' if result.get('error') else '#dcfce7'
-        diagram += f'\n{quote(phase)} [style="rounded,filled", fillcolor="{color}", color="#2563eb", penwidth=2];\n'
+        diagram += f'\n{quote(phase)} [fillcolor="{color}", color="#2563eb", penwidth=2];\n'
     diagram += '\n}'
     details = {'issue_id': os.environ['MULTICA_ISSUE_ID'], 'task_id': context['task_id'], 'status': status}
     if result.get('error'):
@@ -578,10 +570,10 @@ def state_artifact(context, controller, result):
                          separators=(',', ':')).replace('<', '\\u003c')
     return ('<!doctype html><html lang="en"><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1"><title>' + escape(controller.SOP_NAME) + '</title>'
-            '<style>body{font:15px system-ui;margin:16px;color:#172033}pre{white-space:pre;overflow-x:auto;background:#f8fafc;padding:12px;border-radius:8px}'
+            '<style>body{font:15px system-ui;margin:8px}pre{white-space:pre;overflow-x:auto}'
             '.diagram{margin:0;max-width:100%;overflow-x:auto}.diagram svg{display:block;max-width:none;margin:auto}'
             '@media(orientation:landscape){.diagram{overflow-x:hidden}.diagram svg{max-width:100%;height:auto}}'
-            '[role="button"]{cursor:pointer}[role="button"]:hover{filter:brightness(.92)}[role="button"]:focus-visible{outline:2px solid #2563eb;outline-offset:2px}.edge path{pointer-events:stroke}'
+            '[role="button"]{cursor:pointer}.edge path{pointer-events:stroke}.edge text{paint-order:stroke;stroke:white;stroke-width:3px}'
             'h1{font-size:18px}</style>'
             '<div class="diagram" id="workflow">' + graph_svg(diagram, 'workflow_graph') + '</div>'
             '<h1>' + escape(controller.SOP_NAME) + '</h1><pre id="detail" aria-live="polite">'
